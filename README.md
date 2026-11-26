@@ -5,7 +5,10 @@ Antigravity 作为总调度与决策中心（Master），Codex CLI 作为纯执�
 - **OpenSpec**：记录 `change` 与 `tasks.md` 任务节点（仅由 Antigravity 维护勾选状态）。
 - **SQLite（WAL 模式）**：作为沟通记录中间件、会话绑定存储与控制台插件数据源，默认位于 `<project_root>/.codex-orchestrator/state.db`。
 - **Codex CLI**：以非交互模式执行单个清晰 task，遇到需要决策的问题按 `BLOCKED:` 协议退出并交由 Antigravity 拍板续跑。
-- **本地控制台看板**：零外部依赖 Web UI，2 秒轮询 SQLite WAL，支持实时监控、查看沟通日志、一键暂停/中止与注入决策。
+- **默认分工路由**：
+  - **Antigravity（Gemini）亲手负责**：全部文档编写（OpenSpec / README / 说明文档）、全部前端页面与 UI/UX 视觉交互、总控调度与阻塞拍板。
+  - **Codex CLI（GPT）专注负责**：后端与核心业务实体、数据层/算法/状态机、按业务场景拆分的自动化测试，以及收尾逻辑与边界交叉审查。
+- **本地控制台看板**：零外部依赖紧凑小窗 Web UI，1.5 秒轮询 SQLite WAL 与本地 `~/.codex/sessions/` 实时终端流，支持查看当前派发指令、实时黑框直播、一键暂停与叮嘱。
 
 ## 目录结构
 

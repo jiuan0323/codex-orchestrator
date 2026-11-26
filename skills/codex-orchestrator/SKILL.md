@@ -10,7 +10,18 @@ description: >-
 
 # Codex Orchestrator (Antigravity Master → Codex CLI Worker)
 
-Antigravity is the **Master Orchestrator** (planning, architectural decisions, task dispatch, unblocking, and acceptance). Codex CLI is the **Execution Worker** (implementing scoped tasks cleanly and handling internal write conflicts).
+Antigravity is the **Master Orchestrator** (planning, architectural decisions, task dispatch, unblocking, and acceptance). Codex CLI is the **Execution Worker** (implementing scoped backend/logic tasks cleanly and handling internal write conflicts).
+
+## Default Role & Work Routing (Hard Rule)
+
+- **Antigravity (Gemini) owns directly (do NOT delegate these to Codex)**:
+  - **All documentation**: OpenSpec (`proposal.md`, `design.md`, `tasks.md`), `README.md`, API/user docs, changelogs.
+  - **All frontend pages & UI/UX**: Web UI, Android Compose / mobile screens, layout, visual styling, interactions, and animations.
+  - **Orchestration & decisions**: Requirement clarification, architecture design, unblocking Codex, and final acceptance.
+- **Codex CLI (GPT) owns via `dispatch` / `dispatch-batch`**:
+  - **Core logic, backend & data layers**: Domain entities, databases/DAOs, algorithms, parsers, state machines, services, CLI/tooling scripts.
+  - **Automated tests**: Business-scenario unit/integration tests.
+  - **Logic/edge-case review**: Final `cross-review` focused on bugs, race conditions, and edge cases.
 
 ## Architecture
 
