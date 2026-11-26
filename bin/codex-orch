@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+exec python3 "$HOME/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py" "$@"

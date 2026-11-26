@@ -632,7 +632,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Antigravity -> Codex CLI Orchestrator")
     p.add_argument("--project", default=".", help="Target project root directory")
     p.add_argument("--db", default=None, help="Optional override path to SQLite DB")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     sp = sub.add_parser("init", help="Initialize SQLite WAL middleware DB")
     sp.set_defaults(func=cmd_init)
@@ -699,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=10)
     sp.set_defaults(func=cmd_status)
 
-    sp = sub.add_parser("console", help="Launch local web console dashboard backed by SQLite WAL")
+    sp = sub.add_parser("console", aliases=["ui"], help="Launch local web console dashboard backed by SQLite WAL")
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--open", action="store_true", help="Open browser automatically")
@@ -711,6 +711,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if not args.cmd:
+        args.host = "127.0.0.1"
+        args.port = 8765
+        args.open = True
+        cmd_console(args)
+        return
     args.func(args)
 
 

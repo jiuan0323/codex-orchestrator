@@ -16,9 +16,9 @@ Antigravity is the **Master Orchestrator** (planning, architectural decisions, t
 
 - **OpenSpec (`openspec/changes/<change>/`)**: Source of truth for `proposal.md`, `design.md`, and `tasks.md`. **Only Antigravity checks off `tasks.md`.**
 - **SQLite WAL Middleware (`<project>/.codex-orchestrator/state.db`)**: Stores `changes`, `tasks` (including `codex_session_id`, `base_commit`, `result_commit`, `block_count`), `decisions`, and `messages` (also serves as the data source for any console plugin).
-- **Orchestrator CLI**:
+- **Orchestrator CLI** (prefer global `codex-orch` if on PATH, otherwise fall back to `python "~/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py"`):
   ```powershell
-  python "~/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py" --project "<PROJECT_ROOT>" <subcommand> ...
+  codex-orch --project "<PROJECT_ROOT>" <subcommand> ...
   ```
 
 ## Standard Operating Procedure
@@ -81,5 +81,7 @@ python ".../orchestrate.py" --project "<PROJECT>" dispatch --change "<change_id>
   ```
 - Launch the local real-time web console dashboard (reads SQLite WAL every 2s, supports Pause/Resume/Abort, User Note, and adding Decisions):
   ```powershell
-  python ".../orchestrate.py" --project "<PROJECT>" console --port 8765 --open
+  codex-orch --project "<PROJECT>" ui --port 8765 --open
+  # or inside the project root directly:
+  codex-orch
   ```

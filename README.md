@@ -33,24 +33,31 @@ codex-orchestrator/
 
 ## 安装为全局 Antigravity 插件
 
-```bash
+```powershell
 git clone https://github.com/jiuan0323/codex-orchestrator.git ~/.gemini/config/plugins/codex-orchestrator
+# 安装全局短命令 codex-orch（Windows）
+~/.gemini/config/plugins/codex-orchestrator/install.ps1
 ```
 
 Antigravity 会自动发现并加载该插件。
 
 ## 快速开始
 
+在任意项目目录下：
+
 ```bash
+# 一键启动控制台看板并自动打开浏览器（默认监听当前目录，端口 8765）
+codex-orch
+
+# 或者指定项目目录 / 端口
+codex-orch --project /path/to/repo ui --port 8765 --open
+
 # 1. 同步 OpenSpec 任务节点到 SQLite
-python ~/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py \
-  --project /path/to/repo sync-tasks --change my-change
+codex-orch sync-tasks --change my-change
 
 # 2. 派发单个 task 给 Codex CLI 执行
-python ~/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py \
-  --project /path/to/repo dispatch --change my-change --task 1.1 --instructions "Implement feature X"
+codex-orch dispatch --change my-change --task 1.1 --instructions "Implement feature X"
 
-# 3. 启动本地控制台看板
-python ~/.gemini/config/plugins/codex-orchestrator/skills/codex-orchestrator/scripts/orchestrate.py \
-  --project /path/to/repo console --port 8765 --open
+# 3. 查看状态
+codex-orch status
 ```
