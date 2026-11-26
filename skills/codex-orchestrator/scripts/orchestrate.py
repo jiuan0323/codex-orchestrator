@@ -200,8 +200,6 @@ def invoke_codex(
                 codex_bin,
                 "exec",
                 "--json",
-                "--sandbox",
-                "workspace-write",
                 "--approve-for-me",
                 "--skip-git-repo-check",
                 "-C",
