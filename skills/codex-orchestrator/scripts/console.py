@@ -1,9 +1,11 @@
-"""Zero-dependency visual console dashboard with live Codex CLI terminal streaming."""
+"""Zero-dependency compact mini-window console dashboard with live Codex CLI streaming."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import webbrowser
@@ -109,7 +111,7 @@ def parse_codex_session_events(path: Path, limit: int = 80) -> list[dict[str, An
                 ]
                 body = "\n".join(texts).strip()
                 if body:
-                    events.append({"time": ts, "kind": "assistant", "label": "Codex 说明", "text": body})
+                    events.append({"time": ts, "kind": "assistant", "label": "Codex", "text": body})
             elif ptype in ("custom_tool_call", "function_call"):
                 name = payload.get("name") or "tool"
                 raw_in = payload.get("input") or payload.get("arguments") or ""
@@ -119,7 +121,7 @@ def parse_codex_session_events(path: Path, limit: int = 80) -> list[dict[str, An
                     {
                         "time": ts,
                         "kind": "tool_call",
-                        "label": f"执行 {name}",
+                        "label": f"$ {name}",
                         "text": raw_in.strip()[:1200],
                     }
                 )
@@ -129,10 +131,11 @@ def parse_codex_session_events(path: Path, limit: int = 80) -> list[dict[str, An
                 if isinstance(out, str):
                     text_out = out
                 elif isinstance(out, list):
-                    chunks = []
-                    for item in out:
-                        if isinstance(item, dict) and isinstance(item.get("text"), str):
-                            chunks.append(item["text"])
+                    chunks = [
+                        item["text"]
+                        for item in out
+                        if isinstance(item, dict) and isinstance(item.get("text"), str)
+                    ]
                     text_out = "".join(chunks)
                 text_out = text_out.strip()
                 if text_out:
@@ -140,16 +143,49 @@ def parse_codex_session_events(path: Path, limit: int = 80) -> list[dict[str, An
                         {
                             "time": ts,
                             "kind": "tool_output",
-                            "label": "命令输出",
+                            "label": "输出",
                             "text": text_out[:1200],
                         }
                     )
         elif etype == "event_msg" and payload.get("type") == "task_started":
-            events.append({"time": ts, "kind": "system", "label": "会话启动", "text": "Codex CLI 已开始执行新轮次"})
+            events.append({"time": ts, "kind": "system", "label": "开始", "text": "Codex CLI 已启动新轮次"})
         elif etype == "event_msg" and payload.get("type") == "task_complete":
-            events.append({"time": ts, "kind": "system", "label": "轮次完成", "text": "Codex CLI 已完成本轮执行"})
+            events.append({"time": ts, "kind": "system", "label": "完成", "text": "Codex CLI 本轮执行完成"})
 
     return events[-limit:]
+
+
+def open_mini_window(url: str, width: int = 480, height: int = 780) -> None:
+    """Open URL as a clean frameless app mini-window (Edge/Chrome --app mode), fallback to default browser."""
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        candidates = [
+            shutil.which("msedge") or "",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            shutil.which("chrome") or "",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    else:
+        candidates = [
+            shutil.which("google-chrome") or "",
+            shutil.which("chromium") or "",
+            shutil.which("microsoft-edge") or "",
+        ]
+
+    for exe in candidates:
+        if exe and Path(exe).exists():
+            try:
+                subprocess.Popen(
+                    [exe, f"--app={url}", f"--window-size={width},{height}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
+            except OSError:
+                continue
+    webbrowser.open(url)
 
 
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -157,16 +193,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Codex 任务实时看板</title>
+<title>Codex 实时小窗</title>
 <style>
   :root {
     --bg: #0b0f14;
     --panel: #131922;
-    --panel-2: #19212c;
-    --term-bg: #090c10;
-    --border: #263040;
-    --text: #eef2f7;
-    --muted: #8b9bb0;
+    --panel-2: #19222e;
+    --term: #080b10;
+    --border: #253041;
+    --text: #eef3f8;
+    --muted: #8a9bb0;
     --blue: #58a6ff;
     --green: #3fb950;
     --yellow: #e3b341;
@@ -174,271 +210,265 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --purple: #bc8cff;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
   body {
-    margin: 0;
     background: var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    font-size: 14px;
-    line-height: 1.55;
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
-  .topbar {
+
+  /* Compact top bar */
+  .top {
     background: var(--panel);
     border-bottom: 1px solid var(--border);
-    padding: 14px 24px;
+    padding: 10px 12px 8px;
+    flex-shrink: 0;
+  }
+  .top-row {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 14px;
-    position: sticky;
-    top: 0;
-    z-index: 20;
+    gap: 8px;
   }
-  .title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .title-wrap h1 { margin: 0; font-size: 18px; font-weight: 700; }
   .live-pill {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    padding: 4px 10px;
-    border-radius: 999px;
+    gap: 6px;
     font-size: 12px;
-    font-weight: 600;
-    background: rgba(139,155,176,0.14);
+    font-weight: 700;
     color: var(--muted);
   }
-  .live-pill.active { background: rgba(63,185,80,0.18); color: var(--green); }
-  .live-pill.blocked { background: rgba(248,81,73,0.2); color: var(--red); }
+  .live-pill.active { color: var(--green); }
+  .live-pill.blocked { color: var(--red); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-  .live-pill.active .dot { animation: pulse 1.4s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+  .live-pill.active .dot { animation: pulse 1.3s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
-  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pct { font-size: 12px; font-weight: 700; color: var(--blue); }
+  .btn-row { display: flex; gap: 6px; align-items: center; }
   button, select, input {
     background: var(--panel-2);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 7px 12px;
-    font-size: 13px;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
     font-family: inherit;
   }
-  button { cursor: pointer; font-weight: 600; transition: 0.15s; }
+  button { cursor: pointer; font-weight: 600; }
   button:hover { border-color: var(--blue); }
-  button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
   button.warn { border-color: var(--yellow); color: var(--yellow); }
   button.ok { border-color: var(--green); color: var(--green); }
+  button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
 
-  .container { max-width: 1520px; margin: 0 auto; padding: 18px 24px 36px; display: flex; flex-direction: column; gap: 16px; }
+  .bar-track { width: 100%; height: 6px; background: #1e2736; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, #2ea043, #58a6ff); transition: width 0.3s; }
 
-  .hero {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .hero-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
-  .hero-summary { font-size: 15px; font-weight: 600; }
-  .hero-sub { font-size: 12px; color: var(--muted); }
-  .progress-track { width: 100%; height: 10px; background: #1e2736; border-radius: 999px; overflow: hidden; }
-  .progress-fill { height: 100%; background: linear-gradient(90deg, #2ea043, #58a6ff); border-radius: 999px; transition: width 0.35s ease; }
-  .note-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .note-row input { flex: 1; min-width: 240px; }
-
-  .split { display: grid; grid-template-columns: 440px 1fr; gap: 16px; align-items: start; }
-  @media (max-width: 1040px) { .split { grid-template-columns: 1fr; } }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .panel-head {
-    padding: 12px 16px;
+  /* Pinned current assignment from Antigravity */
+  .mission {
+    background: #101826;
     border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    flex-shrink: 0;
+  }
+  .mission-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--blue);
+    font-weight: 700;
   }
-  .panel-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
-  .panel-body { padding: 14px 16px; }
+  .mission-title {
+    margin-top: 3px;
+    font-size: 12.5px;
+    color: var(--text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .mission details { margin-top: 4px; }
+  .mission summary { cursor: pointer; font-size: 11.5px; color: var(--muted); }
+  .mission pre {
+    margin: 6px 0 0;
+    padding: 8px;
+    background: var(--term);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11.5px;
+    color: #c9d6e4;
+  }
 
-  .timeline { display: flex; flex-direction: column; gap: 10px; }
+  /* View tabs */
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 6px;
+  }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .tab.active { background: #1f6feb; color: #fff; }
+
+  /* Main scrollable area */
+  .body {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--term);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .term-item {
+    border-radius: 7px;
+    padding: 8px 10px;
+    border: 1px solid #1d2635;
+    background: #10151e;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+  }
+  .term-item.k-assistant { border-left: 3px solid var(--blue); background: #0f1826; font-family: inherit; font-size: 12.5px; }
+  .term-item.k-tool_call { border-left: 3px solid var(--green); }
+  .term-item.k-tool_output { border-left: 3px solid #445266; background: #0b0f16; }
+  .term-item.k-system { border-left: 3px solid var(--purple); }
+  .term-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .k-assistant .term-label { color: var(--blue); font-weight: 700; }
+  .k-tool_call .term-label { color: var(--green); font-weight: 700; }
+  .k-system .term-label { color: var(--purple); font-weight: 700; }
+  .term-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #dbe4ef; font-family: inherit; }
+  .term-item details summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+
   .step-card {
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    background: var(--panel-2);
-    border-left: 4px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 11px;
+    background: var(--panel);
+    border-left: 3px solid var(--border);
   }
   .step-card.st-done { border-left-color: var(--green); }
   .step-card.st-running { border-left-color: var(--blue); background: rgba(88,166,255,0.08); }
   .step-card.st-blocked { border-left-color: var(--red); background: rgba(248,81,73,0.08); }
-  .step-card.st-reviewing { border-left-color: var(--purple); }
-  .step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-  .step-key { font-weight: 700; font-size: 13px; color: var(--blue); }
-  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .step-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .badge { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; }
   .b-done { background: rgba(63,185,80,0.2); color: var(--green); }
   .b-running { background: rgba(88,166,255,0.22); color: var(--blue); }
   .b-pending { background: rgba(139,155,176,0.16); color: var(--muted); }
   .b-blocked { background: rgba(248,81,73,0.22); color: var(--red); }
   .b-reviewing { background: rgba(188,140,255,0.22); color: var(--purple); }
   .b-failed, .b-rolled_back { background: rgba(227,179,65,0.22); color: var(--yellow); }
-  .step-title { font-size: 13px; color: var(--text); }
-  .step-meta { margin-top: 6px; font-size: 11px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
 
-  .tabs { display: flex; gap: 6px; }
-  .tab {
-    padding: 5px 12px;
-    border-radius: 7px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    border: 1px solid transparent;
-    color: var(--muted);
-    background: transparent;
-  }
-  .tab.active { background: #1f6feb; color: #fff; }
-
-  .terminal {
-    background: var(--term-bg);
-    padding: 14px;
-    height: 620px;
-    overflow-y: auto;
-    font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Code", monospace;
-    font-size: 12.5px;
+  /* Bottom quick input bar */
+  .foot {
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 8px 10px;
     display: flex;
-    flex-direction: column;
-    gap: 10px;
+    gap: 6px;
+    flex-shrink: 0;
   }
-  .term-item {
-    border-radius: 8px;
-    padding: 10px 12px;
-    border: 1px solid #1e2633;
-    background: #10151d;
+  .foot input { flex: 1; min-width: 0; }
+  .toast {
+    position: fixed;
+    right: 12px;
+    bottom: 54px;
+    background: #1f6feb;
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    display: none;
+    z-index: 99;
   }
-  .term-item.k-assistant { border-left: 3px solid var(--blue); background: #0f1724; }
-  .term-item.k-tool_call { border-left: 3px solid var(--green); }
-  .term-item.k-tool_output { border-left: 3px solid #48566a; background: #0c1017; }
-  .term-item.k-system { border-left: 3px solid var(--purple); }
-  .term-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
-  .term-label { font-weight: 700; }
-  .k-assistant .term-label { color: var(--blue); }
-  .k-tool_call .term-label { color: var(--green); }
-  .k-system .term-label { color: var(--purple); }
-  .term-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #d8e1ec; font-family: inherit; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
-
-  .chat-list { display: flex; flex-direction: column; gap: 10px; height: 620px; overflow-y: auto; padding: 14px; background: var(--term-bg); }
-  .bubble { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); }
-  .bubble.s-antigravity { border-left: 3px solid var(--blue); }
-  .bubble.s-codex { border-left: 3px solid var(--purple); }
-  .bubble.s-human { border-left: 3px solid var(--green); }
-  .bubble-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .bubble pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 12.5px; color: #dce4ee; max-height: 220px; overflow-y: auto; }
-
-  .dec-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-  .dec-item { font-size: 12px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); margin-bottom: 6px; }
-  .toast { position: fixed; right: 20px; bottom: 20px; background: #1f6feb; color: #fff; padding: 10px 16px; border-radius: 8px; display: none; font-weight: 600; z-index: 99; }
 </style>
 </head>
 <body>
-<header class="topbar">
-  <div class="title-wrap">
-    <h1>Codex 实时任务看板</h1>
-    <span id="liveBadge" class="live-pill"><span class="dot"></span>检测中...</span>
-    <select id="changeSelect"></select>
-  </div>
-  <div class="controls">
-    <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px;">
-      <input type="checkbox" id="autoRefresh" checked /> 自动刷新
-    </label>
-    <button onclick="refreshAll()">刷新</button>
-  </div>
-</header>
-
-<div class="container">
-  <section class="hero">
-    <div class="hero-top">
-      <div>
-        <div class="hero-summary" id="heroSummary">正在加载项目进度...</div>
-        <div class="hero-sub" id="heroSub"></div>
-      </div>
-      <div class="controls">
-        <button class="warn" onclick="setControl('pause')">暂停下一步</button>
-        <button class="ok" onclick="setControl('none')">恢复继续</button>
-      </div>
+<div class="top">
+  <div class="top-row">
+    <span id="liveBadge" class="live-pill"><span class="dot"></span>连接中...</span>
+    <span id="pctText" class="pct">0/0</span>
+    <div class="btn-row">
+      <button id="pauseBtn" class="warn" onclick="togglePause()">暂停</button>
+      <button onclick="refreshAll()">刷新</button>
     </div>
-    <div class="progress-track"><div id="progressFill" class="progress-fill" style="width:0%"></div></div>
-    <div class="note-row">
-      <input type="text" id="userNoteInput" placeholder="想叮嘱 AI 一句话？写在这里点保存，下一步派发会自动带给 Codex..." />
-      <button class="primary" onclick="saveNote()">保存叮嘱</button>
-    </div>
-  </section>
-
-  <div class="split">
-    <section class="panel">
-      <div class="panel-head">
-        <h2>任务进度清单</h2>
-        <span id="taskRatio" class="hero-sub"></span>
-      </div>
-      <div class="panel-body">
-        <div id="timeline" class="timeline"></div>
-        <details class="dec-box">
-          <summary>已锁定的技术决策（点击展开 / 新增）</summary>
-          <div id="decisionsList" style="margin-top:10px;"></div>
-          <div class="note-row" style="margin-top:8px;">
-            <input type="text" id="decTopic" placeholder="主题" style="min-width:90px;flex:0.4;" />
-            <input type="text" id="decBody" placeholder="已拍板的规则..." style="min-width:140px;" />
-            <button class="primary" onclick="addDecision()">添加</button>
-          </div>
-        </details>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div class="tabs">
-          <button id="tabLive" class="tab active" onclick="switchTab('live')">Codex CLI 实时运行黑框</button>
-          <button id="tabChat" class="tab" onclick="switchTab('chat')">Antigravity ↔ Codex 交接记录</button>
-        </div>
-        <select id="sessionSelect" style="max-width:260px;"></select>
-      </div>
-      <div id="liveView" class="terminal"></div>
-      <div id="chatView" class="chat-list" style="display:none;"></div>
-    </section>
   </div>
+  <div class="bar-track"><div id="barFill" class="bar-fill" style="width:0%"></div></div>
+</div>
+
+<div class="mission">
+  <div class="mission-head">
+    <span id="missionTag">当前任务</span>
+    <span id="changeName" style="color:var(--muted);font-weight:500;"></span>
+  </div>
+  <div id="missionTitle" class="mission-title">正在读取 Antigravity 派发的任务...</div>
+  <details id="missionDetails">
+    <summary>查看 Antigravity 发给 Codex 的完整指令</summary>
+    <pre id="missionPrompt">暂无派发记录</pre>
+  </details>
+</div>
+
+<div class="nav">
+  <div class="tabs">
+    <button id="tLive" class="tab active" onclick="setTab('live')">CLI 直播</button>
+    <button id="tTasks" class="tab" onclick="setTab('tasks')">任务清单</button>
+    <button id="tChat" class="tab" onclick="setTab('chat')">交接记录</button>
+  </div>
+  <select id="sessionSelect" style="max-width:155px;"></select>
+</div>
+
+<div id="mainBody" class="body"></div>
+
+<div class="foot">
+  <input id="noteInput" type="text" placeholder="叮嘱 AI 一句话（下次派发自动生效）..." />
+  <button class="primary" onclick="saveNote()">发送</button>
 </div>
 
 <div id="toast" class="toast"></div>
 
 <script>
-const STATUS_CN = {
+const ST_CN = {
   done: "已完成 ✓",
-  running: "Codex 正在写代码...",
+  running: "运行中",
   pending: "排队中",
-  blocked: "卡住等拍板",
+  blocked: "卡住了",
   reviewing: "待验收",
-  failed: "执行失败",
+  failed: "失败",
   rolled_back: "已回滚"
 };
 const SENDER_CN = {
-  antigravity: "Antigravity（总控）",
-  codex: "Codex CLI（执行）",
-  gate: "自动验证门禁",
-  human: "你（人工指示）"
+  antigravity: "Antigravity",
+  codex: "Codex",
+  gate: "门禁",
+  human: "你"
 };
 
 let statusState = { changes: [], all_changes: [], tasks: [], decisions: [], recent_messages: [] };
 let liveState = { sessions: [], selected_session_id: "", events: [] };
-let selectedChange = "";
 let selectedSession = "";
 let activeTab = "live";
 
@@ -449,21 +479,20 @@ function toast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg;
   el.style.display = "block";
-  clearTimeout(window._t);
-  window._t = setTimeout(() => el.style.display = "none", 2200);
+  clearTimeout(window._tt);
+  window._tt = setTimeout(() => el.style.display = "none", 2000);
 }
-function switchTab(t) {
+function setTab(t) {
   activeTab = t;
-  document.getElementById("tabLive").classList.toggle("active", t === "live");
-  document.getElementById("tabChat").classList.toggle("active", t === "chat");
-  document.getElementById("liveView").style.display = t === "live" ? "flex" : "none";
-  document.getElementById("chatView").style.display = t === "chat" ? "flex" : "none";
+  ["live","tasks","chat"].forEach(k => {
+    document.getElementById("t" + k[0].toUpperCase() + k.slice(1)).classList.toggle("active", k === t);
+  });
+  renderBody();
 }
 
 async function refreshAll() {
-  const q1 = selectedChange ? `?change=${encodeURIComponent(selectedChange)}&limit=40` : "?limit=40";
   const q2 = selectedSession ? `?session=${encodeURIComponent(selectedSession)}&limit=80` : "?limit=80";
-  const [r1, r2] = await Promise.all([fetch("/api/status" + q1), fetch("/api/live" + q2)]);
+  const [r1, r2] = await Promise.all([fetch("/api/status?limit=50"), fetch("/api/live" + q2)]);
   statusState = await r1.json();
   liveState = await r2.json();
   renderAll();
@@ -471,98 +500,86 @@ async function refreshAll() {
 
 function renderAll() {
   const allChanges = statusState.all_changes || statusState.changes || [];
-  const sel = document.getElementById("changeSelect");
-  sel.innerHTML = allChanges.map(c => `<option value="${esc(c.change_id)}" ${c.change_id === (selectedChange || allChanges[0]?.change_id) ? "selected" : ""}>${esc(c.change_id)}</option>`).join("") || `<option value="">暂无任务</option>`;
-  sel.onchange = () => { selectedChange = sel.value; refreshAll(); };
-
-  const curChange = allChanges.find(c => c.change_id === selectedChange) || allChanges[0];
+  const curChange = allChanges[0] || null;
   window._curChange = curChange;
 
   const tasks = statusState.tasks || [];
   const doneCount = tasks.filter(t => t.status === "done").length;
+  const pct = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
   const runningTask = tasks.find(t => t.status === "running");
   const blockedTask = tasks.find(t => t.status === "blocked");
-  const pct = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
+  const focusTask = blockedTask || runningTask || tasks.find(t => t.status === "reviewing") || tasks.find(t => t.status === "pending") || tasks[tasks.length - 1];
 
-  document.getElementById("progressFill").style.width = pct + "%";
-  document.getElementById("taskRatio").textContent = `${doneCount} / ${tasks.length}（${pct}%）`;
+  document.getElementById("pctText").textContent = `${doneCount}/${tasks.length} (${pct}%)`;
+  document.getElementById("barFill").style.width = pct + "%";
+  document.getElementById("changeName").textContent = curChange ? curChange.change_id : "";
+
+  const isPaused = curChange && curChange.control_flag === "pause";
+  const pBtn = document.getElementById("pauseBtn");
+  pBtn.textContent = isPaused ? "继续" : "暂停";
+  pBtn.className = isPaused ? "ok" : "warn";
 
   const anyLive = (liveState.sessions || []).some(s => s.is_active);
   const badge = document.getElementById("liveBadge");
   if (blockedTask) {
     badge.className = "live-pill blocked";
-    badge.innerHTML = `<span class="dot"></span>任务 ${esc(blockedTask.task_key)} 卡住等待拍板`;
+    badge.innerHTML = `<span class="dot"></span>卡住等拍板`;
   } else if (anyLive || runningTask) {
     badge.className = "live-pill active";
-    badge.innerHTML = `<span class="dot"></span>Codex CLI 正在实时运行中`;
+    badge.innerHTML = `<span class="dot"></span>Codex CLI 运行中`;
   } else {
     badge.className = "live-pill";
-    badge.innerHTML = `<span class="dot"></span>当前空闲`;
+    badge.innerHTML = `<span class="dot"></span>空闲`;
   }
 
-  const runningText = runningTask
-    ? `当前正在执行：任务 ${runningTask.task_key}`
-    : (doneCount === tasks.length && tasks.length > 0 ? "全部任务已完成！" : "等待下一步派发");
-  const pauseTag = curChange && curChange.control_flag !== "none" ? ` · [已设状态: ${curChange.control_flag}]` : "";
-  document.getElementById("heroSummary").textContent = `${curChange ? curChange.change_id : "未初始化"} — 已完成 ${doneCount}/${tasks.length}（${pct}%）· ${runningText}${pauseTag}`;
-  document.getElementById("heroSub").textContent = curChange ? `项目目录：${curChange.project_root}` : "";
-
-  const noteInput = document.getElementById("userNoteInput");
-  if (curChange && document.activeElement !== noteInput) {
-    noteInput.value = curChange.user_note || "";
-  }
-
-  // Timeline
-  const tl = document.getElementById("timeline");
-  if (!tasks.length) {
-    tl.innerHTML = `<div class="hero-sub">还没有同步任务节点。</div>`;
+  // Current mission box
+  if (focusTask) {
+    document.getElementById("missionTag").textContent = `当前任务 ${focusTask.task_key} · ${ST_CN[focusTask.status] || focusTask.status}`;
+    document.getElementById("missionTitle").textContent = focusTask.title;
   } else {
-    tl.innerHTML = tasks.map(t => `
-      <div class="step-card st-${esc(t.status)}">
-        <div class="step-top">
-          <span class="step-key">任务 ${esc(t.task_key)}</span>
-          <span class="badge b-${esc(t.status)}">${esc(STATUS_CN[t.status] || t.status)}</span>
-        </div>
-        <div class="step-title">${esc(t.title)}</div>
-        <div class="step-meta">
-          ${t.result_commit ? `<span>已提交 ${esc(t.result_commit.slice(0,7))}</span>` : ""}
-          ${t.retry_count > 1 ? `<span>重试 ${t.retry_count} 次</span>` : ""}
-          ${t.status === "blocked" && t.last_blocker ? `<span style="color:var(--red)">卡点：${esc(t.last_blocker)}</span>` : ""}
-        </div>
-      </div>
-    `).join("");
+    document.getElementById("missionTag").textContent = "暂无任务";
+    document.getElementById("missionTitle").textContent = "等待同步 OpenSpec 任务";
   }
 
-  // Decisions
-  const decs = statusState.decisions || [];
-  document.getElementById("decisionsList").innerHTML = decs.length
-    ? decs.map(d => `<div class="dec-item"><strong>${esc(d.topic)}</strong>：${esc(d.decision)}</div>`).join("")
-    : `<div class="hero-sub">暂无决策记录</div>`;
+  const msgs = statusState.recent_messages || [];
+  const lastDispatch = [...msgs].reverse().find(m => m.msg_type === "dispatch" && (!focusTask || m.task_key === focusTask.task_key))
+    || [...msgs].reverse().find(m => m.msg_type === "dispatch");
+  document.getElementById("missionPrompt").textContent = lastDispatch ? lastDispatch.content : "暂无 Antigravity 派发记录";
 
-  // Session dropdown
+  const noteInput = document.getElementById("noteInput");
+  if (curChange && document.activeElement !== noteInput && !noteInput.value) {
+    noteInput.placeholder = curChange.user_note ? `当前叮嘱：${curChange.user_note}` : "叮嘱 AI 一句话（下次派发自动生效）...";
+  }
+
+  // Session selector
   const ssel = document.getElementById("sessionSelect");
   const sessions = liveState.sessions || [];
+  ssel.style.display = activeTab === "live" ? "block" : "none";
   ssel.innerHTML = sessions.length
-    ? sessions.map((s, idx) => {
-        const tag = s.is_active ? "🟢 运行中" : `${s.age_sec}秒前`;
-        const sid = s.session_id;
-        return `<option value="${esc(sid)}" ${sid === liveState.selected_session_id ? "selected" : ""}>会话 #${sessions.length - idx} (${tag}) · ${esc(sid.slice(0,8))}</option>`;
-      }).join("")
-    : `<option value="">未检测到 Codex CLI 会话</option>`;
+    ? sessions.map((s, idx) => `<option value="${esc(s.session_id)}" ${s.session_id === liveState.selected_session_id ? "selected" : ""}>${s.is_active ? "🟢 " : ""}会话 #${sessions.length - idx}</option>`).join("")
+    : `<option value="">无会话</option>`;
   ssel.onchange = () => { selectedSession = ssel.value; refreshAll(); };
 
-  // Live terminal
-  const lv = document.getElementById("liveView");
-  const wasAtBottom = lv.scrollHeight - lv.scrollTop - lv.clientHeight < 60;
-  const evts = liveState.events || [];
-  if (!evts.length) {
-    lv.innerHTML = `<div style="color:var(--muted);padding:12px;">等待 Codex CLI 输出...（只要该项目有 Codex CLI 在运行，这里会实时滚屏显示每一步操作）</div>`;
-  } else {
-    lv.innerHTML = evts.map(e => {
+  renderBody();
+}
+
+function renderBody() {
+  const body = document.getElementById("mainBody");
+  const ssel = document.getElementById("sessionSelect");
+  if (ssel) ssel.style.display = activeTab === "live" ? "block" : "none";
+
+  if (activeTab === "live") {
+    const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+    const evts = liveState.events || [];
+    if (!evts.length) {
+      body.innerHTML = `<div style="color:var(--muted);padding:12px;">等待 Codex CLI 输出...</div>`;
+      return;
+    }
+    body.innerHTML = evts.map(e => {
       if (e.kind === "tool_output") {
         return `<div class="term-item k-tool_output">
           <div class="term-head"><span class="term-label">${esc(e.label)}</span><span>${esc(e.time)}</span></div>
-          <details><summary>点击展开命令输出（${e.text.length} 字符）</summary><pre class="term-text" style="margin-top:6px;">${esc(e.text)}</pre></details>
+          <details><summary>展开输出（${e.text.length} 字）</summary><pre class="term-text" style="margin-top:4px;">${esc(e.text)}</pre></details>
         </div>`;
       }
       return `<div class="term-item k-${esc(e.kind)}">
@@ -570,63 +587,72 @@ function renderAll() {
         <pre class="term-text">${esc(e.text)}</pre>
       </div>`;
     }).join("");
-    if (wasAtBottom) lv.scrollTop = lv.scrollHeight;
+    if (wasAtBottom) body.scrollTop = body.scrollHeight;
+    return;
   }
 
-  // Chat log
-  const msgs = (statusState.recent_messages || []).slice().reverse();
-  document.getElementById("chatView").innerHTML = msgs.length
-    ? msgs.map(m => `
-      <div class="bubble s-${esc(m.sender)}">
-        <div class="bubble-head">
-          <strong>${esc(SENDER_CN[m.sender] || m.sender)} · ${esc(m.msg_type)}${m.task_key ? " (任务 " + esc(m.task_key) + ")" : ""}</strong>
-          <span>${esc(m.created_at)}</span>
+  if (activeTab === "tasks") {
+    const tasks = statusState.tasks || [];
+    body.innerHTML = tasks.length
+      ? tasks.map(t => `
+        <div class="step-card st-${esc(t.status)}">
+          <div class="step-top">
+            <strong style="color:var(--blue)">任务 ${esc(t.task_key)}</strong>
+            <span class="badge b-${esc(t.status)}">${esc(ST_CN[t.status] || t.status)}</span>
+          </div>
+          <div>${esc(t.title)}</div>
+          ${t.status === "blocked" && t.last_blocker ? `<div style="color:var(--red);font-size:11.5px;margin-top:4px;">卡点：${esc(t.last_blocker)}</div>` : ""}
         </div>
-        <pre>${esc(m.content)}</pre>
+      `).join("")
+      : `<div style="color:var(--muted);padding:12px;">暂无任务</div>`;
+    return;
+  }
+
+  // chat
+  const msgs = (statusState.recent_messages || []).slice().reverse();
+  body.innerHTML = msgs.length
+    ? msgs.map(m => `
+      <div class="term-item ${m.sender === "antigravity" ? "k-assistant" : "k-system"}">
+        <div class="term-head">
+          <span class="term-label">${esc(SENDER_CN[m.sender] || m.sender)} · ${esc(m.msg_type)}${m.task_key ? " #" + esc(m.task_key) : ""}</span>
+          <span>${esc(m.created_at.slice(11,19))}</span>
+        </div>
+        <pre class="term-text">${esc(m.content)}</pre>
       </div>
     `).join("")
     : `<div style="color:var(--muted);padding:12px;">暂无交接记录</div>`;
 }
 
-async function setControl(flag) {
+async function togglePause() {
   const c = window._curChange;
   if (!c) return;
-  const note = document.getElementById("userNoteInput").value;
+  const nextFlag = c.control_flag === "pause" ? "none" : "pause";
   await fetch("/api/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ change_id: c.change_id, flag, note })
+    body: JSON.stringify({ change_id: c.change_id, flag: nextFlag, note: c.user_note || "" })
   });
-  toast(flag === "pause" ? "已暂停下一步派发" : "已恢复正常调度");
+  toast(nextFlag === "pause" ? "已暂停下一步派发" : "已恢复继续");
   refreshAll();
 }
+
 async function saveNote() {
   const c = window._curChange;
-  if (!c) return;
-  await setControl(c.control_flag || "none");
-  toast("叮嘱已保存，下次派发自动生效");
-}
-async function addDecision() {
-  const c = window._curChange;
-  if (!c) return;
-  const topic = document.getElementById("decTopic").value.trim();
-  const decision = document.getElementById("decBody").value.trim();
-  if (!topic || !decision) return;
-  await fetch("/api/decide", {
+  const input = document.getElementById("noteInput");
+  const note = input.value.trim();
+  if (!c || !note) return;
+  await fetch("/api/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ change_id: c.change_id, topic, decision, by: "human" })
+    body: JSON.stringify({ change_id: c.change_id, flag: c.control_flag || "none", note })
   });
-  document.getElementById("decTopic").value = "";
-  document.getElementById("decBody").value = "";
-  toast("已添加锁定决策");
+  input.value = "";
+  toast("已发送叮嘱，下次派发自动带给 Codex");
   refreshAll();
 }
 
 refreshAll();
-setInterval(() => {
-  if (document.getElementById("autoRefresh").checked) refreshAll();
-}, 1500);
+setInterval(refreshAll, 1500);
 </script>
 </body>
 </html>
@@ -754,7 +780,7 @@ def serve_console(db_path: Path, host: str = "127.0.0.1", port: int = 8765, open
     url = f"http://{host}:{port}/"
     print(f"Codex Orchestrator Console running at {url} (DB: {db_path})", flush=True)
     if open_browser:
-        webbrowser.open(url)
+        open_mini_window(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -766,7 +792,7 @@ def serve_console(db_path: Path, host: str = "127.0.0.1", port: int = 8765, open
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Codex Orchestrator Local Console")
+    parser = argparse.ArgumentParser(description="Codex Orchestrator Mini Console")
     parser.add_argument("--project", default=".", help="Target project root directory")
     parser.add_argument("--db", default=None, help="Optional override path to SQLite DB")
     parser.add_argument("--host", default="127.0.0.1")
