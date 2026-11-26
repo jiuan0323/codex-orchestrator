@@ -520,10 +520,14 @@ function renderAll() {
   pBtn.className = isPaused ? "ok" : "warn";
 
   const anyLive = (liveState.sessions || []).some(s => s.is_active);
+  const runningTasks = tasks.filter(t => t.status === "running");
   const badge = document.getElementById("liveBadge");
   if (blockedTask) {
     badge.className = "live-pill blocked";
     badge.innerHTML = `<span class="dot"></span>卡住等拍板`;
+  } else if (runningTasks.length > 1) {
+    badge.className = "live-pill active";
+    badge.innerHTML = `<span class="dot"></span>${runningTasks.length} 个 Codex 并发运行中`;
   } else if (anyLive || runningTask) {
     badge.className = "live-pill active";
     badge.innerHTML = `<span class="dot"></span>Codex CLI 运行中`;
@@ -592,15 +596,17 @@ function renderBody() {
   }
 
   if (activeTab === "tasks") {
+    const KIND_CN = { dev_entity: "实体开发", test_scenario: "场景测试", cross_review: "交叉审查" };
     const tasks = statusState.tasks || [];
     body.innerHTML = tasks.length
       ? tasks.map(t => `
         <div class="step-card st-${esc(t.status)}">
           <div class="step-top">
-            <strong style="color:var(--blue)">任务 ${esc(t.task_key)}</strong>
+            <strong style="color:var(--blue)">任务 ${esc(t.task_key)} <span style="color:var(--muted);font-weight:500;">· ${esc(KIND_CN[t.task_kind] || t.task_kind || "实体开发")}</span></strong>
             <span class="badge b-${esc(t.status)}">${esc(ST_CN[t.status] || t.status)}</span>
           </div>
           <div>${esc(t.title)}</div>
+          ${t.owned_paths ? `<div style="color:var(--muted);font-size:11px;margin-top:3px;">文件边界：${esc(t.owned_paths)}</div>` : ""}
           ${t.status === "blocked" && t.last_blocker ? `<div style="color:var(--red);font-size:11.5px;margin-top:4px;">卡点：${esc(t.last_blocker)}</div>` : ""}
         </div>
       `).join("")

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     change_id TEXT NOT NULL,
     task_key TEXT NOT NULL,
     title TEXT NOT NULL,
+    task_kind TEXT NOT NULL DEFAULT 'dev_entity',
+    worktree_path TEXT,
+    branch TEXT,
+    owned_paths TEXT,
     codex_session_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     base_commit TEXT,
@@ -98,9 +102,23 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _ensure_task_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    migrations = [
+        ("task_kind", "TEXT NOT NULL DEFAULT 'dev_entity'"),
+        ("worktree_path", "TEXT"),
+        ("branch", "TEXT"),
+        ("owned_paths", "TEXT"),
+    ]
+    for col, col_def in migrations:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {col_def}")
+
+
 def init_db(db_path: Path) -> Path:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        _ensure_task_columns(conn)
     return db_path
 
 
@@ -133,22 +151,42 @@ def upsert_task(
     task_key: str,
     title: str,
     done_in_spec: bool = False,
+    task_kind: str = "dev_entity",
+    worktree_path: Optional[str] = None,
+    branch: Optional[str] = None,
+    owned_paths: Optional[str] = None,
 ) -> None:
     now = utc_now()
     initial_status = "done" if done_in_spec else "pending"
     conn.execute(
         """
-        INSERT INTO tasks (change_id, task_key, title, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO tasks (change_id, task_key, title, task_kind, worktree_path, branch, owned_paths, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(change_id, task_key) DO UPDATE SET
             title = excluded.title,
+            task_kind = COALESCE(excluded.task_kind, tasks.task_kind),
+            worktree_path = COALESCE(excluded.worktree_path, tasks.worktree_path),
+            branch = COALESCE(excluded.branch, tasks.branch),
+            owned_paths = COALESCE(excluded.owned_paths, tasks.owned_paths),
             status = CASE
                 WHEN ? = 1 THEN 'done'
                 ELSE tasks.status
             END,
             updated_at = excluded.updated_at
         """,
-        (change_id, task_key, title, initial_status, now, now, 1 if done_in_spec else 0),
+        (
+            change_id,
+            task_key,
+            title,
+            task_kind,
+            worktree_path,
+            branch,
+            owned_paths,
+            initial_status,
+            now,
+            now,
+            1 if done_in_spec else 0,
+        ),
     )
 
 

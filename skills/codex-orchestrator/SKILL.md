@@ -34,12 +34,28 @@ Antigravity is the **Master Orchestrator** (planning, architectural decisions, t
    python ".../orchestrate.py" --project "<PROJECT>" decide --change "<change_id>" --topic "<topic>" --decision "<locked decision>"
    ```
 
-### 2. Dispatch One Scoped Task at a Time
-Dispatch a single clear task (avoid dumping an entire multi-task change into one long Codex session):
-```powershell
-python ".../orchestrate.py" --project "<PROJECT>" dispatch --change "<change_id>" --task "1.1" --instructions "<unambiguous implementation brief>"
-```
-- The script automatically records `base_commit`, injects locked decisions + anti-defensive rules, runs `codex exec --json --sandbox workspace-write --approve-for-me`, binds `codex_session_id` in SQLite, and logs the exchange.
+### 2. Three-Phase Concurrent Execution (Recommended for Medium/Large Changes)
+To maximize throughput without causing merge conflicts or token waste:
+1. **Phase 1 — Entity-Based Parallel Development (`dev_entity`)**:
+   - Split implementation by **domain entity / module** with disjoint `owned_paths` (keep concurrency to 2–4 medium-sized tasks so system-prompt overhead stays tiny).
+   - Dispatch concurrently using `dispatch-batch` (with `--worktree` when tasks touch shared build/config or need branch isolation):
+     ```powershell
+     codex-orch --project "<PROJECT>" dispatch-batch --change "<change_id>" --max-workers 3 --worktree --spec batch_dev.json
+     ```
+   - Or dispatch a single task:
+     ```powershell
+     codex-orch --project "<PROJECT>" dispatch --change "<change_id>" --task "1.1" --kind dev_entity --owned-paths "app/src/.../deck/**" --instructions "<brief>"
+     ```
+2. **Phase 2 — Scenario-Based Parallel Testing (`test_scenario`)**:
+   - After merging/accepting entity tasks, split verification by **end-to-end business scenarios** (NOT isolated entities) and dispatch concurrently with `--kind test_scenario` to catch cross-entity integration bugs.
+3. **Phase 3 — Dual-Model Cross-Review (`cross-review`)**:
+   - Run Codex (GPT) independent diff review while Antigravity (Gemini) reviews architecture, UX, and defensive bloat in parallel:
+     ```powershell
+     codex-orch --project "<PROJECT>" cross-review --change "<change_id>" --base "<base_commit>"
+     ```
+   - Synthesize both reviews, resolve any remaining concrete issues via a final targeted fix, then close the change.
+
+- Every dispatch automatically records `base_commit`, injects locked decisions + file ownership boundary + anti-defensive rules, binds `codex_session_id` in SQLite, and logs the exchange.
 - If `control_flag` is `pause` or `abort` in SQLite, dispatch halts immediately and reports `user_note`.
 
 ### 3. Handle Blockers & Circuit Breaker

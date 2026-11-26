@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -97,6 +98,8 @@ def build_codex_prompt(
     instructions: str,
     decisions: list[dict[str, Any]],
     user_note: Optional[str] = None,
+    task_kind: str = "dev_entity",
+    owned_paths: Optional[str] = None,
 ) -> str:
     decision_block = (
         "\n".join(f"- [{d['decided_by']}] {d['topic']}: {d['decision']}" for d in decisions)
@@ -104,18 +107,30 @@ def build_codex_prompt(
         else "- (none yet)"
     )
     note_block = f"\n## User Note\n{user_note}\n" if user_note else ""
+    ownership_block = (
+        f"\n## File Ownership Boundary (Parallel Execution)\n"
+        f"You ONLY own and may modify files matching: `{owned_paths}`.\n"
+        f"Do NOT modify files outside this boundary so concurrent Codex workers do not collide.\n"
+        if owned_paths
+        else ""
+    )
+    kind_label = {
+        "dev_entity": "Entity-scoped Development",
+        "test_scenario": "Business-Scenario Testing",
+        "cross_review": "Cross-Model Final Review",
+    }.get(task_kind, task_kind)
     return f"""You are executing a single scoped task dispatched by Antigravity (Master Orchestrator).
 
 ## Scope
 - OpenSpec Change: `{change_id}`
-- Task `{task_key}`: {task_title}
+- Task `{task_key}` ({kind_label}): {task_title}
 
 ## Execution Instructions
 {instructions}
 
 ## Locked Decisions (Do NOT revisit or ask about these)
 {decision_block}
-{note_block}
+{ownership_block}{note_block}
 ## Strict Execution Rules
 1. Implement ONLY this task cleanly and directly. Do NOT edit `openspec/changes/{change_id}/tasks.md` checkboxes (Antigravity owns OpenSpec status).
 2. Avoid defensive bloat: trust internal types and contracts; do NOT add speculative try/catch wrappers, redundant null checks for guaranteed internal values, or unused abstractions.
@@ -276,65 +291,109 @@ def cmd_sync_tasks(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_dispatch(args: argparse.Namespace) -> None:
-    project_root = Path(args.project).expanduser().resolve()
-    db_path = db.init_db(db.resolve_db_path(project_root, args.db))
+def ensure_task_worktree(project_root: Path, change_id: str, task_key: str) -> tuple[Path, str]:
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_key)
+    wt_dir = project_root / ".codex-orchestrator" / "worktrees" / f"{change_id}-{safe_task}"
+    branch = f"codex/{change_id}/{safe_task}"
+    if wt_dir.exists():
+        return wt_dir, branch
+    wt_dir.parent.mkdir(parents=True, exist_ok=True)
+    res = run_git(project_root, "worktree", "add", "-B", branch, str(wt_dir), "HEAD")
+    if res is None:
+        raise RuntimeError(f"Failed to create git worktree at {wt_dir} for branch {branch}")
+    return wt_dir, branch
 
+
+def execute_single_dispatch(
+    project_root: Path,
+    db_path: Path,
+    change_id: str,
+    task_key: str,
+    instructions: str,
+    title: Optional[str] = None,
+    task_kind: str = "dev_entity",
+    owned_paths: Optional[str] = None,
+    use_worktree: bool = False,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    dry_run: bool = False,
+    ignore_control: bool = False,
+) -> dict[str, Any]:
     with db.connect(db_path) as conn:
-        change = db.get_change(conn, args.change)
+        change = db.get_change(conn, change_id)
         if not change:
             branch = run_git(project_root, "rev-parse", "--abbrev-ref", "HEAD")
-            db.upsert_change(conn, args.change, str(project_root), worktree_path=str(project_root), branch=branch)
-            change = db.get_change(conn, args.change)
+            db.upsert_change(conn, change_id, str(project_root), worktree_path=str(project_root), branch=branch)
+            change = db.get_change(conn, change_id)
 
         assert change is not None
-        if change["control_flag"] in ("pause", "abort") and not args.ignore_control:
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "halted_by_control": change["control_flag"],
-                        "user_note": change.get("user_note"),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            sys.exit(2)
+        if change["control_flag"] in ("pause", "abort") and not ignore_control:
+            return {
+                "ok": False,
+                "task_key": task_key,
+                "halted_by_control": change["control_flag"],
+                "user_note": change.get("user_note"),
+            }
 
-        task = db.get_task(conn, args.change, args.task)
+        task = db.get_task(conn, change_id, task_key)
         if not task:
-            db.upsert_task(conn, args.change, args.task, args.title or f"Task {args.task}")
-            task = db.get_task(conn, args.change, args.task)
+            db.upsert_task(
+                conn,
+                change_id,
+                task_key,
+                title or f"Task {task_key}",
+                task_kind=task_kind,
+                owned_paths=owned_paths,
+            )
+            task = db.get_task(conn, change_id, task_key)
         assert task is not None
 
-        work_dir = Path(change["worktree_path"] or project_root)
+        task_branch = task.get("branch")
+        if use_worktree:
+            work_dir, task_branch = ensure_task_worktree(project_root, change_id, task_key)
+        else:
+            work_dir = Path(task.get("worktree_path") or change["worktree_path"] or project_root)
+
         base_commit = task["base_commit"] or run_git(work_dir, "rev-parse", "HEAD")
-        decisions = db.list_decisions(conn, args.change)
+        decisions = db.list_decisions(conn, change_id)
+        eff_kind = task_kind or task.get("task_kind") or "dev_entity"
+        eff_owned = owned_paths if owned_paths is not None else task.get("owned_paths")
         prompt = build_codex_prompt(
-            change_id=args.change,
-            task_key=args.task,
+            change_id=change_id,
+            task_key=task_key,
             task_title=task["title"],
-            instructions=args.instructions,
+            instructions=instructions,
             decisions=decisions,
             user_note=change.get("user_note"),
+            task_kind=eff_kind,
+            owned_paths=eff_owned,
         )
 
         db.update_task_fields(
             conn,
-            args.change,
-            args.task,
+            change_id,
+            task_key,
+            task_kind=eff_kind,
+            worktree_path=str(work_dir),
+            branch=task_branch,
+            owned_paths=eff_owned,
             status="running",
             base_commit=base_commit,
             retry_count=task["retry_count"] + 1,
         )
-        db.add_message(conn, args.change, "antigravity", "dispatch", prompt, task_key=args.task)
+        db.add_message(conn, change_id, "antigravity", "dispatch", prompt, task_key=task_key)
 
-    result = invoke_codex(work_dir, prompt, session_id=None, dry_run=args.dry_run)
+    extra_args: list[str] = []
+    if model:
+        extra_args.extend(["-m", model])
+    if effort:
+        extra_args.extend(["-c", f'model_reasoning_effort="{effort}"'])
+
+    result = invoke_codex(work_dir, prompt, session_id=None, extra_args=extra_args or None, dry_run=dry_run)
     blocker_match = BLOCKED_RE.search(result["output"])
 
     with db.connect(db_path) as conn:
-        task_now = db.get_task(conn, args.change, args.task)
+        task_now = db.get_task(conn, change_id, task_key)
         assert task_now is not None
         sid = result["session_id"]
         if blocker_match:
@@ -342,34 +401,34 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
             new_blocks = task_now["block_count"] + 1
             db.update_task_fields(
                 conn,
-                args.change,
-                args.task,
+                change_id,
+                task_key,
                 codex_session_id=sid,
                 status="blocked",
                 block_count=new_blocks,
                 last_blocker=blocker_text,
             )
             db.add_message(
-                conn, args.change, "codex", "blocked", result["output"], task_key=args.task, codex_session_id=sid
+                conn, change_id, "codex", "blocked", result["output"], task_key=task_key, codex_session_id=sid
             )
             status_out = "blocked"
             circuit_breaker = new_blocks >= 2
         elif result["returncode"] != 0:
             db.update_task_fields(
                 conn,
-                args.change,
-                args.task,
+                change_id,
+                task_key,
                 codex_session_id=sid,
                 status="failed",
                 last_blocker=result["stderr"] or result["output"][:500],
             )
             db.add_message(
                 conn,
-                args.change,
+                change_id,
                 "codex",
                 "output",
                 result["output"] or result["stderr"],
-                task_key=args.task,
+                task_key=task_key,
                 codex_session_id=sid,
             )
             status_out = "failed"
@@ -377,26 +436,149 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         else:
             db.update_task_fields(
                 conn,
-                args.change,
-                args.task,
+                change_id,
+                task_key,
                 codex_session_id=sid,
                 status="reviewing",
             )
             db.add_message(
-                conn, args.change, "codex", "output", result["output"], task_key=args.task, codex_session_id=sid
+                conn, change_id, "codex", "output", result["output"], task_key=task_key, codex_session_id=sid
             )
             status_out = "reviewing"
             circuit_breaker = False
+
+    return {
+        "ok": result["returncode"] == 0,
+        "task_key": task_key,
+        "task_kind": eff_kind,
+        "worktree_path": str(work_dir),
+        "branch": task_branch,
+        "status": status_out,
+        "circuit_breaker_triggered": circuit_breaker,
+        "codex_session_id": result["session_id"],
+        "base_commit": base_commit,
+        "output": result["output"],
+        "stderr": result["stderr"],
+    }
+
+
+def cmd_dispatch(args: argparse.Namespace) -> None:
+    project_root = Path(args.project).expanduser().resolve()
+    db_path = db.init_db(db.resolve_db_path(project_root, args.db))
+    out = execute_single_dispatch(
+        project_root=project_root,
+        db_path=db_path,
+        change_id=args.change,
+        task_key=args.task,
+        instructions=args.instructions,
+        title=args.title,
+        task_kind=args.kind,
+        owned_paths=args.owned_paths,
+        use_worktree=args.worktree,
+        model=args.model,
+        effort=args.effort,
+        dry_run=args.dry_run,
+        ignore_control=args.ignore_control,
+    )
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if out.get("halted_by_control"):
+        sys.exit(2)
+
+
+def cmd_dispatch_batch(args: argparse.Namespace) -> None:
+    project_root = Path(args.project).expanduser().resolve()
+    db_path = db.init_db(db.resolve_db_path(project_root, args.db))
+    raw = Path(args.spec).read_text(encoding="utf-8") if args.spec else args.spec_json
+    items = json.loads(raw)
+    if not isinstance(items, list) or not items:
+        print(json.dumps({"ok": False, "error": "Batch spec must be a non-empty JSON list."}, ensure_ascii=False))
+        sys.exit(1)
+
+    max_workers = max(1, min(args.max_workers, len(items)))
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = [
+            pool.submit(
+                execute_single_dispatch,
+                project_root,
+                db_path,
+                args.change,
+                str(item["task"]),
+                str(item["instructions"]),
+                item.get("title"),
+                item.get("kind", "dev_entity"),
+                item.get("owned_paths"),
+                bool(item.get("worktree", args.worktree)),
+                item.get("model", args.model),
+                item.get("effort", args.effort),
+                args.dry_run,
+                args.ignore_control,
+            )
+            for item in items
+        ]
+        for fut in as_completed(futs):
+            results.append(fut.result())
+
+    results.sort(key=lambda r: str(r.get("task_key", "")))
+    all_ok = all(r.get("ok") for r in results)
+    print(json.dumps({"ok": all_ok, "count": len(results), "results": results}, ensure_ascii=False, indent=2))
+    if not all_ok:
+        sys.exit(1)
+
+
+def cmd_cross_review(args: argparse.Namespace) -> None:
+    """Run an independent Codex (GPT) final review on the change diff for Gemini+GPT convergence."""
+    project_root = Path(args.project).expanduser().resolve()
+    db_path = db.init_db(db.resolve_db_path(project_root, args.db))
+    base_ref = args.base or "HEAD~1"
+    diff_stat = run_git(project_root, "diff", "--stat", f"{base_ref}..HEAD") or "(no diff stat)"
+    diff_body = run_git(project_root, "diff", f"{base_ref}..HEAD") or "(empty diff)"
+    if len(diff_body) > 24000:
+        diff_body = diff_body[:24000] + "\n... [diff truncated for token efficiency]"
+
+    review_prompt = f"""You are performing an independent final Cross-Model Code Review (GPT/Codex perspective) for OpenSpec change `{args.change}`.
+Antigravity (Gemini) is reviewing architecture, UX, and defensive bloat in parallel; your job is to catch:
+1. Logic bugs, broken state transitions, or race conditions.
+2. Edge cases, persistence/serialization bugs, or broken integration between entities.
+3. Missing test assertions for critical business scenarios.
+
+Do NOT nitpick formatting, naming, or request unnecessary defensive try/catch wrappers.
+Return a concise, prioritized list of concrete issues (with file paths and exact fix suggestions), or reply `LGTM: no blocking issues found.` if clean.
+
+## Diff Stat ({base_ref}..HEAD)
+{diff_stat}
+
+## Diff
+```diff
+{diff_body}
+```
+"""
+    extra_args: list[str] = []
+    if args.model:
+        extra_args.extend(["-m", args.model])
+    if args.effort:
+        extra_args.extend(["-c", f'model_reasoning_effort="{args.effort}"'])
+
+    result = invoke_codex(project_root, review_prompt, session_id=None, extra_args=extra_args or None, dry_run=args.dry_run)
+    with db.connect(db_path) as conn:
+        db.add_message(
+            conn,
+            args.change,
+            "codex",
+            "cross_review",
+            result["output"] or result["stderr"],
+            task_key=args.task,
+            codex_session_id=result["session_id"],
+        )
 
     print(
         json.dumps(
             {
                 "ok": result["returncode"] == 0,
-                "status": status_out,
-                "circuit_breaker_triggered": circuit_breaker,
+                "change_id": args.change,
+                "base_ref": base_ref,
                 "codex_session_id": result["session_id"],
-                "base_commit": base_commit,
-                "output": result["output"],
+                "review": result["output"],
                 "stderr": result["stderr"],
             },
             ensure_ascii=False,
@@ -646,9 +828,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--task", required=True)
     sp.add_argument("--title", default=None)
     sp.add_argument("--instructions", required=True)
+    sp.add_argument("--kind", default="dev_entity", choices=["dev_entity", "test_scenario", "cross_review"])
+    sp.add_argument("--owned-paths", default=None, help="File boundary globs/paths owned by this task")
+    sp.add_argument("--worktree", action="store_true", help="Run inside an isolated task git worktree")
+    sp.add_argument("--model", default=None)
+    sp.add_argument("--effort", default=None, choices=["low", "medium", "high"])
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--ignore-control", action="store_true")
     sp.set_defaults(func=cmd_dispatch)
+
+    sp = sub.add_parser("dispatch-batch", help="Dispatch multiple independent tasks concurrently")
+    sp.add_argument("--change", required=True)
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--spec", help="Path to JSON file listing tasks to run in parallel")
+    g.add_argument("--spec-json", help="Inline JSON array of tasks to run in parallel")
+    sp.add_argument("--max-workers", type=int, default=3, help="Max concurrent Codex CLI workers (recommended 2-4)")
+    sp.add_argument("--worktree", action="store_true", help="Isolate each task in its own git worktree")
+    sp.add_argument("--model", default=None)
+    sp.add_argument("--effort", default=None, choices=["low", "medium", "high"])
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--ignore-control", action="store_true")
+    sp.set_defaults(func=cmd_dispatch_batch)
+
+    sp = sub.add_parser("cross-review", help="Run independent Codex (GPT) final review on git diff")
+    sp.add_argument("--change", required=True)
+    sp.add_argument("--base", default="HEAD~1", help="Base commit/ref for diff")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--model", default=None)
+    sp.add_argument("--effort", default="high", choices=["low", "medium", "high"])
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_cross_review)
 
     sp = sub.add_parser("resume", help="Resume a blocked or active Codex session with a decision")
     sp.add_argument("--change", required=True)
