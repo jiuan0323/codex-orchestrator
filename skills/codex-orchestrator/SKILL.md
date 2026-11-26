@@ -106,7 +106,9 @@ To maximize throughput without causing merge conflicts or token waste:
   ```powershell
   python ".../orchestrate.py" --project "<PROJECT>" control --change "<change_id>" --flag pause --note "Wait for API review"
   ```
-- Launch the local real-time web console dashboard (reads SQLite WAL every 2s, supports Pause/Resume/Abort, User Note, and adding Decisions):
+- Open the **native Antigravity Sidecar Panel** directly in the side pane (no external browser needed) by emitting this clickable pill in chat:
+  `[Codex 任务与终端观察](sidecar://codex-orchestrator/codex-console/ui.html)`
+- Or launch the standalone mini-window console via CLI:
   ```powershell
   codex-orch --project "<PROJECT>" ui --port 8765 --open
   # or inside the project root directly:

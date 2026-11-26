@@ -1,0 +1,20 @@
+{
+  "command": "C:/develop/python/python.exe",
+  "args": [
+    "sidecar_server.py"
+  ],
+  "restart_policy": "always",
+  "display_name": "Codex 实时观察台",
+  "description": "在 Antigravity 原生侧边栏实时监控 OpenSpec 任务进度、Codex CLI 实时终端输出、Antigravity 派发指令与跨 Agent 交接记录，支持一键暂停与注入叮嘱。",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "Codex 实时观察台",
+    "views": [
+      {
+        "title": "Codex 任务与终端观察",
+        "path": "/ui.html",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE"
+      }
+    ]
+  }
+}
