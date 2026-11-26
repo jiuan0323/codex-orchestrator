@@ -488,7 +488,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
 def cmd_dispatch_batch(args: argparse.Namespace) -> None:
     project_root = Path(args.project).expanduser().resolve()
     db_path = db.init_db(db.resolve_db_path(project_root, args.db))
-    raw = Path(args.spec).read_text(encoding="utf-8") if args.spec else args.spec_json
+    raw = Path(args.spec).read_text(encoding="utf-8-sig") if args.spec else args.spec_json
     items = json.loads(raw)
     if not isinstance(items, list) or not items:
         print(json.dumps({"ok": False, "error": "Batch spec must be a non-empty JSON list."}, ensure_ascii=False))
