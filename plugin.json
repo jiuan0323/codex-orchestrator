@@ -1,0 +1,12 @@
+{
+  "name": "codex-orchestrator",
+  "displayName": "Codex Orchestrator",
+  "version": "0.1.0",
+  "repository": "https://github.com/jiuan0323/codex-orchestrator",
+  "description": "Antigravity-led orchestration for Codex CLI using OpenSpec task nodes and a SQLite WAL middleware for state, bindings, decisions, and console telemetry.",
+  "suggestedPrompts": [
+    "初始化当前项目的 OpenSpec 与 Codex SQLite 调度环境",
+    "为当前需求生成 OpenSpec change，并派发 Codex CLI 执行第一个 task",
+    "查看当前所有 OpenSpec change 与 Codex 会话的绑定状态和阻塞记录"
+  ]
+}
