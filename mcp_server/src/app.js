@@ -34,6 +34,9 @@ let hostTheme = "light";
 let surfaceMode = "solid"; // solid | frosted | glass
 let sidebarOpen = true;
 let polling = false;
+let snapshotJson = "";
+let sidebarHtml = "";
+let feedHtml = "";
 const expandedDiffs = new Map();
 const expandedPrompts = new Set();
 
@@ -126,12 +129,7 @@ function renderSidebar() {
   const groups = state.sidebar_projects || [];
   const q = searchQuery.trim().toLowerCase();
 
-  if (!groups.length) {
-    listEl.innerHTML = `<div class="empty-side">暂无监听项目</div>`;
-    return;
-  }
-
-  listEl.innerHTML = groups.map((g) => {
+  const html = groups.length ? groups.map((g) => {
     const filtered = (g.sessions || []).filter((s) => !q || s.title.toLowerCase().includes(q) || g.name.toLowerCase().includes(q));
     if (q && !filtered.length) return "";
     return `
@@ -154,7 +152,12 @@ function renderSidebar() {
         </div>
       </div>
     `;
-  }).join("");
+  }).join("") : `<div class="empty-side">暂无监听项目</div>`;
+
+  if (html === sidebarHtml) return;
+  const scrollTop = listEl.scrollTop;
+  listEl.innerHTML = sidebarHtml = html;
+  listEl.scrollTop = scrollTop;
 
   listEl.querySelectorAll(".sess-card").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -167,7 +170,7 @@ function renderSidebar() {
   });
 }
 
-function renderMain() {
+function renderMain({ follow = false, sessionChanged = false } = {}) {
   const tel = state.telemetry || {};
   document.getElementById("headerTitle").textContent = state.project_name || "Antigravity × Codex";
 
@@ -204,12 +207,7 @@ function renderMain() {
     : `<span class="idle-dot"></span>已就绪`;
 
   const feed = document.getElementById("chatFeed");
-  if (!rounds.length) {
-    feed.innerHTML = `<div class="empty-main">选择左侧项目或会话，即可实时查看 Antigravity → Codex 执行流</div>`;
-    return;
-  }
-
-  feed.innerHTML = rounds.map((r, rIdx) => {
+  const html = rounds.length ? rounds.map((r, rIdx) => {
     const stepStatus = r.is_active
       ? `正在执行 · ${r.commands.length} 条命令 · ${r.files_changed.length} 个文件`
       : `已完成执行 · ${r.commands.length} 条命令 · ${r.files_changed.length} 个文件 · ${r.duration_sec}秒`;
@@ -251,7 +249,7 @@ function renderMain() {
 
     return `
       ${divider}
-      <div class="turn-block fade-in">
+      <div class="turn-block">
         <div class="ag-wrap">
           <div class="ag-meta">
             <span>${esc(r.dispatch_time)}</span>
@@ -293,7 +291,12 @@ function renderMain() {
         </div>
       </div>
     `;
-  }).join("");
+  }).join("") : `<div class="empty-main">选择左侧项目或会话，即可实时查看 Antigravity → Codex 执行流</div>`;
+
+  if (html === feedHtml && !sessionChanged) return;
+  const scrollTop = feed.scrollTop;
+  const nearBottom = feed.scrollHeight - feed.clientHeight - scrollTop <= 24;
+  feed.innerHTML = feedHtml = html;
 
   feed.querySelectorAll(".expand-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -339,7 +342,22 @@ function renderMain() {
     });
   });
 
-  if (autoFollow) feed.scrollTop = feed.scrollHeight;
+  feed.scrollTop = follow && autoFollow && (sessionChanged || nearBottom)
+    ? feed.scrollHeight
+    : sessionChanged ? 0 : scrollTop;
+}
+
+function applySnapshot(nextState) {
+  const json = JSON.stringify(nextState);
+  if (json === snapshotJson) return;
+  snapshotJson = json;
+  const sessionChanged = nextState.active_project !== state.active_project
+    || nextState.selected_session_id !== state.selected_session_id;
+  state = nextState;
+  if (!selectedProject && state.active_project) selectedProject = state.active_project;
+  if (!selectedSession && state.selected_session_id) selectedSession = state.selected_session_id;
+  renderSidebar();
+  renderMain({ follow: true, sessionChanged });
 }
 
 async function pollState() {
@@ -350,13 +368,7 @@ async function pollState() {
       ...(selectedProject ? { project: selectedProject } : {}),
       ...(selectedSession ? { session: selectedSession } : {}),
     });
-    if (res?.structuredContent) {
-      state = res.structuredContent;
-      if (!selectedProject && state.active_project) selectedProject = state.active_project;
-      if (!selectedSession && state.selected_session_id) selectedSession = state.selected_session_id;
-      renderSidebar();
-      renderMain();
-    }
+    if (res?.structuredContent) applySnapshot(res.structuredContent);
   } catch (e) {
     // ignore transient close
   } finally {
@@ -395,13 +407,7 @@ async function sendDockNote() {
 }
 
 app.ontoolresult = (result) => {
-  if (result?.structuredContent) {
-    state = result.structuredContent;
-    if (!selectedProject && state.active_project) selectedProject = state.active_project;
-    if (!selectedSession && state.selected_session_id) selectedSession = state.selected_session_id;
-    renderSidebar();
-    renderMain();
-  }
+  if (result?.structuredContent) applySnapshot(result.structuredContent);
 };
 app.onhostcontextchanged = (ctx) => {
   if (ctx?.theme === "dark" || ctx?.theme === "light") {
@@ -418,6 +424,10 @@ document.getElementById("searchInput").addEventListener("input", (e) => {
 });
 document.getElementById("followToggle").addEventListener("change", (e) => {
   autoFollow = e.target.checked;
+  if (autoFollow) {
+    const feed = document.getElementById("chatFeed");
+    feed.scrollTop = feed.scrollHeight;
+  }
 });
 document.getElementById("themeBtn").addEventListener("click", () => {
   const order = ["auto", "light", "dark"];

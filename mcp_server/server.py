@@ -21,7 +21,12 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import console  # noqa: E402
 import db  # noqa: E402
 
-PATCH_FILE_RE = re.compile(r"\*\*\*\s+(Add|Update|Delete)\s+File:\s+(.+)")
+# Escaped newlines before patch lines are separators; backslashes in paths are literal.
+PATCH_FILE_RE = re.compile(
+    r"\*\*\*[ \t]+(Add|Update|Delete)[ \t]+File:[ \t]+(.+?)"
+    r'(?=\r?$|\\(?:r\\)?n(?=[ +@*"-]|\\(?:r\\)?n|$))',
+    re.MULTILINE,
+)
 WALL_TIME_RE = re.compile(r"Wall time\s+([0-9.]+)\s*seconds?", re.IGNORECASE)
 EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)|exit\s*code[:\s]+(-?\d+)', re.IGNORECASE)
 
