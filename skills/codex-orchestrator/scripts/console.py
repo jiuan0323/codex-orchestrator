@@ -74,7 +74,7 @@ def find_project_codex_sessions(project_roots: list[str], max_scan: int = 40) ->
         if not meta:
             continue
         cwd_norm = _norm_path(meta["cwd"])
-        if targets and cwd_norm not in targets:
+        if targets and not any(cwd_norm == t or cwd_norm.startswith(t + os.sep) or cwd_norm.startswith(t + "/") for t in targets):
             continue
         meta["is_active"] = (now - meta["mtime"]) < 45
         meta["age_sec"] = int(max(0, now - meta["mtime"]))
@@ -169,46 +169,9 @@ def open_mini_window(url: str, width: int = 920, height: int = 660) -> None:
 
 
 def _build_standalone_html() -> str:
-    """Reuse the precompiled v0.4.0 MCP App HTML and inject a tiny local HTTP bridge for standalone desktop mode."""
+    """Serve the precompiled v0.4.0 MCP App HTML directly (auto-detects standalone mode via window.parent === window)."""
     app_html = MCP_DIR / "app.html"
-    raw = app_html.read_text(encoding="utf-8")
-    bridge = """<script>
-// Standalone desktop window bridge: intercepts MCP postMessage RPCs and routes them to local HTTP endpoints.
-(function() {
-  const origPost = window.parent.postMessage.bind(window.parent);
-  if (window.parent === window) {
-    window.addEventListener("message", async (ev) => {
-      const msg = ev.data;
-      if (!msg || msg.jsonrpc !== "2.0" || !msg.method) return;
-      const respond = (result) => window.postMessage({ jsonrpc: "2.0", id: msg.id, result }, "*");
-      if (msg.method === "ui/initialize") {
-        respond({
-          protocolVersion: "2026-01-26",
-          hostInfo: { name: "codex-desktop-window", version: "0.4.0" },
-          hostCapabilities: { serverTools: {} },
-          hostContext: { theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", displayMode: "inline" }
-        });
-        return;
-      }
-      if (msg.method === "tools/call") {
-        const { name, arguments: args } = msg.params || {};
-        try {
-          const r = await fetch("/api/tool", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, arguments: args || {} })
-          });
-          const data = await r.json();
-          respond(data);
-        } catch (e) {
-          respond({ isError: true, content: [{ type: "text", text: String(e) }] });
-        }
-      }
-    });
-  }
-})();
-</script>"""
-    return raw.replace("<script>", bridge + "\n<script>", 1)
+    return app_html.read_text(encoding="utf-8")
 
 
 def make_handler(db_path: Path):
