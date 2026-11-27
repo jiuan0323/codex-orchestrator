@@ -29,6 +29,10 @@ PATCH_FILE_RE = re.compile(
 )
 WALL_TIME_RE = re.compile(r"Wall time\s+([0-9.]+)\s*seconds?", re.IGNORECASE)
 EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)|exit\s*code[:\s]+(-?\d+)', re.IGNORECASE)
+SIDEBAR_HEX_ID_RE = re.compile(
+    r"\b(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{8,})\b",
+    re.IGNORECASE | re.ASCII,
+)
 
 
 def _run_git(project_root: Path, *args: str, timeout: float = 5.0) -> str:
@@ -321,12 +325,47 @@ def _extract_task_brief(prompt: str) -> str:
     return prompt.strip()
 
 
+def _sidebar_title(text: str) -> str:
+    for line in text.splitlines():
+        line = re.sub(r"^\s*(?:#{1,6}|[-*+])\s+", "", line)
+        line = SIDEBAR_HEX_ID_RE.sub("", line.replace("`", "").replace("**", ""))
+        title = " ".join(line.split()).strip(" :：·-")
+        if title:
+            return title
+    return ""
+
+
+def _sidebar_session_title(path: Path) -> str:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as rollout:
+            for line in rollout:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "response_item":
+                    continue
+                payload = entry["payload"]
+                if payload.get("type") != "message" or payload.get("role") != "user":
+                    continue
+                for part in payload["content"]:
+                    prompt = part.get("text", "")
+                    if "AGENTS.md instructions" in prompt or "<environment_context>" in prompt:
+                        continue
+                    title = _sidebar_title(_extract_task_brief(prompt))
+                    if title:
+                        return title
+    except OSError:
+        pass
+    return "本地会话"
+
+
 def build_state_snapshot(
     project_arg: Optional[str] = None,
     session_arg: Optional[str] = None,
 ) -> dict[str, Any]:
     projects = discover_projects()
-    sidebar_projects: list[dict[str, Any]] = []
+    sidebar_sessions: dict[str, tuple[tuple[bool, int], Path, dict[str, Any], Optional[dict[str, Any]]]] = {}
 
     for proj in projects:
         p_path = Path(proj["path"])
@@ -339,30 +378,39 @@ def build_state_snapshot(
                 for r in conn.execute("SELECT * FROM tasks").fetchall():
                     if r["codex_session_id"]:
                         task_by_sid[r["codex_session_id"]] = dict(r)
-        items = []
-        for s in p_sessions[:8]:
+        for s in p_sessions:
             sid = s["session_id"]
             t_row = task_by_sid.get(sid)
-            title = f"任务 {t_row['task_key']} · {t_row['title']}" if t_row else f"会话 {sid[:8]}"
-            items.append(
-                {
-                    "session_id": sid,
-                    "title": title,
-                    "task_key": t_row["task_key"] if t_row else "",
-                    "status": t_row["status"] if t_row else ("running" if s["is_active"] else "done"),
-                    "is_active": s["is_active"],
-                    "started_label": _short_time(s["started_at"]),
-                    "project_path": str(p_path),
-                }
-            )
-        sidebar_projects.append(
+            priority = (t_row is not None, len(p_path.parts))
+            if sid not in sidebar_sessions or priority > sidebar_sessions[sid][0]:
+                sidebar_sessions[sid] = (priority, p_path, s, t_row)
+
+    items_by_project: dict[str, list[dict[str, Any]]] = {proj["path"]: [] for proj in projects}
+    for _, p_path, s, t_row in sorted(sidebar_sessions.values(), key=lambda item: item[2]["mtime"], reverse=True):
+        items = items_by_project[str(p_path)]
+        if len(items) == 8:
+            continue
+        title = _sidebar_title(t_row["title"]) if t_row else ""
+        items.append(
             {
-                "name": proj["name"],
-                "path": str(p_path),
-                "count": len(items),
-                "sessions": items,
+                "session_id": s["session_id"],
+                "title": title or _sidebar_session_title(Path(s["path"])),
+                "task_key": t_row["task_key"] if t_row else "",
+                "status": t_row["status"] if t_row else ("running" if s["is_active"] else "done"),
+                "is_active": s["is_active"],
+                "started_label": _short_time(s["started_at"]),
+                "project_path": str(p_path),
             }
         )
+    sidebar_projects = [
+        {
+            "name": proj["name"],
+            "path": proj["path"],
+            "count": len(items_by_project[proj["path"]]),
+            "sessions": items_by_project[proj["path"]],
+        }
+        for proj in projects
+    ]
 
     target = resolve_project(project_arg)
     if not target:

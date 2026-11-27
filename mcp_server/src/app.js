@@ -37,8 +37,19 @@ let polling = false;
 let snapshotJson = "";
 let sidebarHtml = "";
 let feedHtml = "";
+const collapsedProjects = new Set();
 const expandedDiffs = new Map();
 const expandedPrompts = new Set();
+
+const SESSION_STATUS_LABELS = {
+  pending: "待执行",
+  running: "进行中",
+  reviewing: "待验收",
+  done: "已完成",
+  blocked: "受阻",
+  failed: "失败",
+  rolled_back: "已回滚",
+};
 
 const ICON = {
   sparkle: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 2L14.6 9.4L22 12L14.6 14.6L12 22L9.4 14.6L2 12L9.4 9.4L12 2Z" fill="url(#agG)"/><defs><linearGradient id="agG" x1="2" y1="2" x2="22" y2="22"><stop stop-color="#4F8DF7"/><stop offset="0.5" stop-color="#9B72CB"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs></svg>`,
@@ -191,38 +202,51 @@ function renderReviewDiff(filePath, diffText) {
 
 function renderSidebar() {
   const listEl = document.getElementById("sidebarList");
-  const groups = state.sidebar_projects || [];
   const q = searchQuery.trim().toLowerCase();
 
-  const html = groups.length ? groups.map((g) => {
-    const filtered = (g.sessions || []).filter((s) => !q || s.title.toLowerCase().includes(q) || g.name.toLowerCase().includes(q));
+  const groupsHtml = state.sidebar_projects.map((g) => {
+    const filtered = !q || g.name.toLowerCase().includes(q) ? g.sessions : g.sessions.filter((s) => (
+      s.title.toLowerCase().includes(q) || s.task_key.toLowerCase().includes(q)
+    ));
     if (q && !filtered.length) return "";
     return `
-      <div class="proj-group">
-        <div class="proj-head">
+      <details class="proj-group" data-project="${esc(g.path)}"${q || !collapsedProjects.has(g.path) ? " open" : ""}>
+        <summary class="proj-head">
           <span class="proj-name">${ICON.folder}<span>${esc(g.name)}</span></span>
-          <span class="proj-cnt">${filtered.length}</span>
-        </div>
+          <span class="proj-cnt">${filtered.length} 个会话</span>
+        </summary>
         <div class="sess-list">
           ${filtered.map((s) => {
             const active = s.session_id === state.selected_session_id;
-            return `<button class="sess-card ${active ? "active" : ""}" data-proj="${esc(s.project_path)}" data-sid="${esc(s.session_id)}">
-              <div class="sess-title-row">
-                <span class="sess-title">${esc(s.title)}</span>
-                ${s.is_active ? `<span class="live-dot"></span>` : ""}
-              </div>
-              <div class="sess-meta">✦→◎ · ${esc(s.started_label)}</div>
+            const status = SESSION_STATUS_LABELS[s.status] || "状态未知";
+            return `<button type="button" class="sess-card ${active ? "active" : ""}"${active ? ' aria-current="true"' : ""} data-proj="${esc(s.project_path)}" data-sid="${esc(s.session_id)}">
+              <span class="sess-title" title="${esc(s.title)}">${esc(s.title)}</span>
+              <span class="sess-meta">
+                <span class="sess-status" data-status="${esc(s.status)}">${status}</span>
+                ${s.started_label ? `<span>开始于 ${esc(s.started_label)}</span>` : ""}
+              </span>
             </button>`;
-          }).join("")}
+          }).join("") || `<div class="empty-side">暂无会话</div>`}
         </div>
-      </div>
+      </details>
     `;
-  }).join("") : `<div class="empty-side">暂无监听项目</div>`;
+  }).join("");
+  const html = groupsHtml || `<div class="empty-side">${q ? "没有匹配的会话" : "暂无监听项目"}</div>`;
 
   if (html === sidebarHtml) return;
   const scrollTop = listEl.scrollTop;
   listEl.innerHTML = sidebarHtml = html;
   listEl.scrollTop = scrollTop;
+
+  if (!q) {
+    listEl.querySelectorAll(".proj-head").forEach((summary) => {
+      const group = summary.parentElement;
+      summary.addEventListener("click", () => {
+        if (group.open) collapsedProjects.add(group.dataset.project);
+        else collapsedProjects.delete(group.dataset.project);
+      });
+    });
+  }
 
   listEl.querySelectorAll(".sess-card").forEach((btn) => {
     btn.addEventListener("click", () => {
