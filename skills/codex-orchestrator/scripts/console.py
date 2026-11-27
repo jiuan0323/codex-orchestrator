@@ -278,15 +278,26 @@ def serve_console(db_path: Path, host: str = "127.0.0.1", port: int = 8765, open
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
             print("Launching native desktop window: Antigravity × Codex", flush=True)
-            webview.create_window(
+            win = webview.create_window(
                 "Antigravity × Codex",
                 url=url,
                 width=960,
                 height=680,
                 min_size=(420, 520),
                 resizable=True,
+                on_top=True,
             )
-            webview.start()
+
+            def _focus_once() -> None:
+                import time as _t
+                _t.sleep(0.4)
+                try:
+                    win.show()
+                    win.on_top = False
+                except Exception:
+                    pass
+
+            webview.start(func=_focus_once)
             server.shutdown()
             server.server_close()
             return
