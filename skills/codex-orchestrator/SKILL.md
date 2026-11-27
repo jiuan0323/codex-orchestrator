@@ -14,14 +14,14 @@ Antigravity is the **Master Orchestrator** (planning, architectural decisions, t
 
 ## Default Role & Work Routing (Hard Rule)
 
-- **Antigravity (Gemini) owns directly (do NOT delegate these to Codex)**:
-  - **All documentation**: OpenSpec (`proposal.md`, `design.md`, `tasks.md`), `README.md`, API/user docs, changelogs.
-  - **All frontend pages & UI/UX**: Web UI, Android Compose / mobile screens, layout, visual styling, interactions, and animations.
-  - **Orchestration & decisions**: Requirement clarification, architecture design, unblocking Codex, and final acceptance.
-- **Codex CLI (GPT) owns via `dispatch` / `dispatch-batch`**:
-  - **Core logic, backend & data layers**: Domain entities, databases/DAOs, algorithms, parsers, state machines, services, CLI/tooling scripts.
+- **Codex CLI (GPT) owns code implementation by default via `dispatch` / `dispatch-batch`**:
+  - **All code writing & bug fixes**: Backend logic, data layers, algorithms, state machines, scripts, bug fixes, and frontend/UI code implementation (following Antigravity's design spec).
   - **Automated tests**: Business-scenario unit/integration tests.
   - **Logic/edge-case review**: Final `cross-review` focused on bugs, race conditions, and edge cases.
+- **Antigravity (Gemini) owns planning, aesthetics, orchestration, and acceptance**:
+  - **All documentation**: OpenSpec (`proposal.md`, `design.md`, `tasks.md`), `README.md`, API/user docs.
+  - **Visual design & UX direction**: Define clear visual/UI specifications and aesthetics before dispatching code to Codex; review UI quality and polish if needed.
+  - **Orchestration & acceptance**: Requirement clarification, architecture decisions, unblocking Codex, reviewing diffs against defensive bloat, and accepting/completing OpenSpec nodes.
 
 ## Architecture
 

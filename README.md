@@ -9,8 +9,8 @@ Antigravity 作为总调度与决策中心（Master），官方 `codex exec` 作
 
 ## 默认分工路由
 
-- **Antigravity（Gemini）亲手负责**：全部文档编写（OpenSpec / README / 说明文档）、全部前端页面与 UI/UX 视觉交互、总控统筹与阻塞拍板。
-- **Codex CLI（GPT）专注负责**：按实体拆分的后端/数据层/核心算法/状态机、按业务场景拆分的自动化测试，以及收尾逻辑与边界交叉审查（`cross-review`）。
+- **Codex CLI（GPT）默认负责全部代码实现**：后端/数据层/核心算法、Bug 修复、按设计稿落地的代码实现、按业务场景拆分的自动化测试，以及收尾逻辑与边界交叉审查（`cross-review`）。
+- **Antigravity（Gemini）负责总控、文档、审美把关与验收**：需求发散、架构决策、OpenSpec 与全部文档编写、UI/UX 视觉方案制定、阻塞拍板与 Diff 最终验收。
 
 ## 目录结构
 
