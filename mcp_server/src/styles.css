@@ -141,10 +141,6 @@
     padding: 14px 12px;
     gap: 12px;
   }
-  @media (max-width: 720px) {
-    .sidebar { display: none; }
-    .shell:not(.hide-side) .sidebar { position: fixed; z-index: 30; top: 0; bottom: 0; left: 0; box-shadow: 4px 0 24px rgba(0,0,0,0.16); }
-  }
   .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px; }
   .brand-icon {
     display: inline-flex; align-items: center; gap: 3px;
@@ -196,6 +192,7 @@
   .header-title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .header-sub-row { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
   .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12px; color: var(--muted); }
+  #headerSubText { overflow-wrap: anywhere; }
 
   /* Cache pill + hover popover */
   .cache-wrap { position: relative; display: inline-flex; }
@@ -274,7 +271,7 @@
   }
   .ag-text {
     font-family: Georgia, "Noto Serif SC", "Songti SC", serif;
-    font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+    font-size: 14px; line-height: 1.65;
   }
   .ag-bubble.clamped .ag-text {
     max-height: 112px; overflow: hidden;
@@ -286,6 +283,24 @@
     cursor: pointer; font-size: 12px; font-weight: 600; padding: 0;
   }
   .ic { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; background: var(--code-bg); padding: 1px 6px; border-radius: 5px; }
+  .markdown { overflow-wrap: anywhere; }
+  .markdown > * { margin: 0 0 0.65em; }
+  .markdown > :last-child { margin-bottom: 0; }
+  .markdown :is(h1, h2, h3, h4, h5, h6) { line-height: 1.3; }
+  .markdown h1 { font-size: 1.35em; }
+  .markdown h2 { font-size: 1.2em; }
+  .markdown :is(h3, h4, h5, h6) { font-size: 1.05em; }
+  .markdown :is(ul, ol) { padding-inline-start: 1.5em; }
+  .markdown a { color: var(--accent); }
+  .markdown pre, .cmd-output {
+    overflow: auto;
+    background: var(--code-bg);
+    padding: 8px 10px;
+    border-radius: 7px;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    overflow-wrap: normal;
+  }
+  .markdown pre code, .cmd-output code { font: inherit; }
 
   /* Codex response */
   .cx-wrap { display: flex; flex-direction: column; gap: 10px; max-width: 88%; }
@@ -302,10 +317,15 @@
   }
   .exec-summary {
     list-style: none; cursor: pointer; padding: 10px 14px;
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
     font-size: 12.5px; font-weight: 500; color: var(--text);
   }
   .exec-summary::-webkit-details-marker { display: none; }
+  .disclosure {
+    width: 6px; height: 6px; flex: 0 0 6px; margin: 0 3px;
+    border: solid var(--muted); border-width: 0 1px 1px 0; transform: rotate(-45deg);
+  }
+  details[open] > summary .disclosure { transform: rotate(45deg); }
   .star { display: inline-block; color: var(--accent); margin-right: 4px; }
   .star.spin { animation: slowspin 3.2s linear infinite; }
   @keyframes slowspin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -314,7 +334,7 @@
   .thought-box {
     background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
     padding: 10px 12px; font-size: 12.5px; color: var(--muted);
-    display: flex; align-items: flex-start; gap: 8px; white-space: pre-wrap;
+    display: flex; align-items: flex-start; gap: 8px; white-space: pre-wrap; overflow-wrap: anywhere;
   }
   .t-ic { flex-shrink: 0; margin-top: 2px; opacity: 0.75; display: inline-flex; }
   .exec-row {
@@ -330,6 +350,14 @@
   .cmd-pass { background: var(--pill-pass-bg); color: var(--pill-pass-fg); }
   .cmd-fail { background: var(--pill-fail-bg); color: var(--pill-fail-fg); }
   .cmd-run { background: var(--code-bg); color: var(--accent); }
+  .cmd-details {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
+  }
+  .cmd-summary { cursor: pointer; list-style: none; background: transparent; border: 0; }
+  .cmd-summary::-webkit-details-marker { display: none; }
+  .cmd-summary:hover .disclosure { border-color: var(--accent); }
+  .mono-cmd { margin-right: auto; }
+  .cmd-output { margin: 0 8px 8px; max-height: 240px; }
 
   /* Review-grade inline Diff */
   .inline-diff {
@@ -362,13 +390,15 @@
     -webkit-backdrop-filter: blur(var(--blur)) saturate(140%);
     box-shadow: var(--specular, var(--shadow));
   }
-  .summary-text { font-family: Georgia, "Noto Serif SC", "Songti SC", serif; font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+  .summary-text { font-family: Georgia, "Noto Serif SC", "Songti SC", serif; font-size: 14px; line-height: 1.7; }
   .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .file-chip {
     display: inline-flex; align-items: center; gap: 5px;
     background: var(--surface-soft); border: 1px solid var(--border); border-radius: 6px;
     padding: 2px 8px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--muted);
+    max-width: 100%; overflow-wrap: anywhere;
   }
+  .file-chip svg { flex-shrink: 0; }
 
   /* Subtle floating bottom-right control dock */
   .dock {
@@ -400,3 +430,32 @@
     opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 60;
   }
   .toast.show { opacity: 0.94; }
+
+  @media (max-width: 720px) {
+    .shell {
+      display: grid; position: relative;
+      grid-template: "header" auto "feed" minmax(0, 1fr) / minmax(0, 1fr);
+    }
+    .main { display: contents; }
+    .sidebar {
+      grid-area: feed; position: absolute; inset: 0 auto 0 0; z-index: 30;
+      max-width: 100%; box-shadow: 4px 0 24px rgba(0,0,0,0.16);
+    }
+    .header { grid-area: header; flex-wrap: wrap; gap: 4px 10px; padding: 7px 10px; }
+    .header-left { flex: 1 1 100%; }
+    .header-left > div { flex: 1; }
+    .header-sub-row { flex-wrap: nowrap; }
+    #headerSubText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cache-wrap { flex-shrink: 0; }
+    .cache-pop { left: auto; right: 0; }
+    .header-right { flex-wrap: wrap; }
+    .feed { grid-area: feed; padding: 14px 12px 64px; gap: 16px; }
+    .ag-bubble, .cx-wrap { max-width: 100%; }
+    .ag-meta { flex-wrap: wrap; justify-content: flex-end; }
+    .ag-bubble, .summary-card { padding: 10px 12px; }
+    .exec-summary, .exec-row { padding: 8px 10px; }
+    .exec-inner { padding: 0 8px 8px; }
+    .dock { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
+    .dock input, .dock:focus-within input { min-width: 0; }
+    .dock-btn { flex-shrink: 0; }
+  }

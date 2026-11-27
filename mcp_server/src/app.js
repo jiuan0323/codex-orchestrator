@@ -32,7 +32,7 @@ let autoFollow = true;
 let themeMode = "auto"; // auto | light | dark
 let hostTheme = "light";
 let surfaceMode = "solid"; // solid | frosted | glass
-let sidebarOpen = true;
+const narrowWindow = window.matchMedia("(max-width: 720px)");
 let polling = false;
 let snapshotJson = "";
 let sidebarHtml = "";
@@ -63,8 +63,69 @@ function fmtTokens(n) {
   return String(n);
 }
 
-function formatInlineCode(text) {
-  return esc(text).replace(/`([^`]+)`/g, `<code class="ic">$1</code>`);
+function formatInline(text) {
+  const format = (escaped) => escaped.replace(/`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_, code, bold, italic, label, href) => {
+      if (code) return `<code class="ic">${code}</code>`;
+      if (bold) return `<strong>${format(bold)}</strong>`;
+      if (italic) return `<em>${format(italic)}</em>`;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    });
+  return format(esc(text));
+}
+
+function renderMarkdown(text) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = "";
+  const endParagraph = () => {
+    if (paragraph.length) blocks.push(`<p>${paragraph.join("<br>")}</p>`);
+    paragraph = [];
+  };
+  const endList = () => {
+    if (list) blocks.push(`</${list}>`);
+    list = "";
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})[\w+-]*\s*$/);
+    const heading = line.match(/^ {0,3}(#{1,6})\s+(.+)$/);
+    const item = line.match(/^ {0,3}([-*+]|\d+\.)\s+(.+)$/);
+    if (item) {
+      endParagraph();
+      const tag = item[1].endsWith(".") ? "ol" : "ul";
+      if (tag !== list) {
+        endList();
+        list = tag;
+        blocks.push(tag === "ol" ? `<ol start="${parseInt(item[1], 10)}">` : "<ul>");
+      }
+      blocks.push(`<li>${formatInline(item[2])}</li>`);
+      continue;
+    }
+
+    endList();
+    if (fence) {
+      endParagraph();
+      const closing = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+      const code = [];
+      while (++i < lines.length && !closing.test(lines[i])) code.push(lines[i]);
+      blocks.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+    } else if (heading) {
+      endParagraph();
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${formatInline(heading[2])}</h${level}>`);
+    } else if (line.trim()) {
+      paragraph.push(formatInline(line));
+    } else {
+      endParagraph();
+    }
+  }
+
+  endList();
+  endParagraph();
+  return blocks.join("");
 }
 
 function toast(msg) {
@@ -165,6 +226,7 @@ function renderSidebar() {
       selectedSession = btn.getAttribute("data-sid") || "";
       expandedDiffs.clear();
       expandedPrompts.clear();
+      if (narrowWindow.matches) setSidebarOpen(false);
       pollState();
     });
   });
@@ -230,15 +292,19 @@ function renderMain({ follow = false, sessionChanged = false } = {}) {
       `;
     }).join("");
 
-    const cmdsHtml = r.commands.map((c) => {
+    const cmdsHtml = r.commands.map((c, i) => {
       const badgeCls = c.status === "fail" ? "cmd-fail" : (c.status === "running" ? "cmd-run" : "cmd-pass");
       const badgeTxt = c.status === "fail" ? "失败" : (c.status === "running" ? "运行中..." : `通过${c.duration ? " · " + c.duration : ""}`);
-      return `
-        <div class="exec-row">
-          <div class="exec-left mono-cmd">$ ${esc(c.cmd)}</div>
-          <span class="cmd-pill ${badgeCls}">${esc(badgeTxt)}</span>
-        </div>
-      `;
+      const command = `<code class="mono-cmd" title="${esc(c.cmd)}">$ ${esc(c.cmd)}</code>`;
+      const badge = `<span class="cmd-pill ${badgeCls}">${esc(badgeTxt)}</span>`;
+      return c.output ? `
+        <details class="cmd-details" data-detail-key="${esc(`${r.round_no}:cmd:${c.call_id || i}`)}">
+          <summary class="exec-row cmd-summary" aria-label="${esc(`命令输出：${c.cmd}，${badgeTxt}`)}">
+            ${command}${badge}<span class="disclosure" aria-hidden="true"></span>
+          </summary>
+          <pre class="cmd-output" tabindex="0"><code>${esc(c.output)}</code></pre>
+        </details>
+      ` : `<div class="exec-row">${command}${badge}</div>`;
     }).join("");
 
     const chipsHtml = r.files_changed.length
@@ -258,7 +324,7 @@ function renderMain({ follow = false, sessionChanged = false } = {}) {
             <span class="avatar">${ICON.sparkle}</span>
           </div>
           <div class="ag-bubble ${isLong && !isExpanded ? "clamped" : ""}">
-            <div class="ag-text">${formatInlineCode(r.dispatch_brief)}</div>
+            <div class="ag-text markdown">${renderMarkdown(r.dispatch_brief)}</div>
             ${isLong ? `<button class="expand-btn" data-pkey="${esc(promptKey)}">${isExpanded ? "收起全文 ▴" : "展开全文 ▾"}</button>` : ""}
           </div>
         </div>
@@ -270,10 +336,10 @@ function renderMain({ follow = false, sessionChanged = false } = {}) {
             <span class="muted">${esc(r.model)} · ${esc(r.effort)}</span>
           </div>
 
-          <details class="exec-card" open>
+          <details class="exec-card" data-detail-key="${r.round_no}" open>
             <summary class="exec-summary">
               <span><span class="star ${r.is_active ? "spin" : ""}">✦</span> ${esc(stepStatus)}</span>
-              <span class="muted">▾</span>
+              <span class="disclosure" aria-hidden="true"></span>
             </summary>
             <div class="exec-inner">
               ${r.commentary ? `<div class="thought-box"><span class="t-ic">${ICON.thought}</span><span>${esc(r.commentary)}</span></div>` : ""}
@@ -284,7 +350,7 @@ function renderMain({ follow = false, sessionChanged = false } = {}) {
 
           ${r.final_summary ? `
             <div class="summary-card">
-              <div class="summary-text">${formatInlineCode(r.final_summary)}</div>
+              <div class="summary-text markdown">${renderMarkdown(r.final_summary)}</div>
               ${chipsHtml}
             </div>
           ` : ""}
@@ -296,7 +362,16 @@ function renderMain({ follow = false, sessionChanged = false } = {}) {
   if (html === feedHtml && !sessionChanged) return;
   const scrollTop = feed.scrollTop;
   const nearBottom = feed.scrollHeight - feed.clientHeight - scrollTop <= 24;
+  const openDetails = new Map();
+  if (!sessionChanged) {
+    feed.querySelectorAll("details[data-detail-key]").forEach((detail) => {
+      openDetails.set(detail.dataset.detailKey, detail.open);
+    });
+  }
   feed.innerHTML = feedHtml = html;
+  feed.querySelectorAll("details[data-detail-key]").forEach((detail) => {
+    if (openDetails.has(detail.dataset.detailKey)) detail.open = openDetails.get(detail.dataset.detailKey);
+  });
 
   feed.querySelectorAll(".expand-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -440,9 +515,16 @@ document.getElementById("surfaceBtn").addEventListener("click", () => {
   applyAppearance();
 });
 document.getElementById("refreshBtn").addEventListener("click", pollState);
-document.getElementById("toggleSidebarBtn").addEventListener("click", () => {
-  sidebarOpen = !sidebarOpen;
-  document.getElementById("appShell").classList.toggle("hide-side", !sidebarOpen);
+const shell = document.getElementById("appShell");
+const sidebarToggle = document.getElementById("toggleSidebarBtn");
+function setSidebarOpen(open) {
+  shell.classList.toggle("hide-side", !open);
+  sidebarToggle.setAttribute("aria-expanded", String(open));
+}
+setSidebarOpen(!narrowWindow.matches);
+narrowWindow.addEventListener("change", (e) => setSidebarOpen(!e.matches));
+sidebarToggle.addEventListener("click", () => {
+  setSidebarOpen(shell.classList.contains("hide-side"));
 });
 document.getElementById("dockPauseBtn").addEventListener("click", togglePause);
 document.getElementById("dockSendBtn").addEventListener("click", sendDockNote);
