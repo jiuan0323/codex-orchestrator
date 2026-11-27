@@ -113,13 +113,21 @@ def resolve_project(requested: Optional[str]) -> Optional[Path]:
 
 
 def _extract_cmd_preview(name: str, raw_in: str) -> str:
-    if name == "exec":
-        m = re.search(r'cmd\s*:\s*"([^"]+)"', raw_in)
-        if m:
-            return m.group(1)
-        m2 = re.search(r"cmd\s*:\s*'([^']+)'", raw_in)
-        if m2:
-            return m2.group(1)
+    if name == "exec_command":
+        try:
+            args = json.loads(raw_in)
+        except json.JSONDecodeError:
+            args = None
+        if isinstance(args, dict) and isinstance(args.get("cmd"), str):
+            return args["cmd"]
+    elif name == "exec":
+        match = re.search(
+            r"""(?:\bcmd|"cmd"|'cmd')\s*:\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\])*)\1""",
+            raw_in,
+        )
+        if match:
+            quote, command = match.groups()
+            return re.sub(r"\\([" + quote + r"\\])", r"\1", command)
     return raw_in.splitlines()[0][:140] if raw_in else name
 
 

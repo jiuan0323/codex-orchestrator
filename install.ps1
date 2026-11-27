@@ -5,6 +5,7 @@ New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Copy-Item (Join-Path $repoRoot "bin\codex-orch.cmd") (Join-Path $binDir "codex-orch.cmd") -Force
 Copy-Item (Join-Path $repoRoot "bin\codex-orch") (Join-Path $binDir "codex-orch") -Force
+Copy-Item (Join-Path $repoRoot "bin\codex-orb.cmd") (Join-Path $binDir "codex-orb.cmd") -Force
 
 $pyExe = (Get-Command python -ErrorAction SilentlyContinue).Source
 if ($pyExe) {

@@ -808,6 +808,13 @@ def cmd_console(args: argparse.Namespace) -> None:
     console.serve_console(db_path, host=args.host, port=args.port, open_browser=args.open)
 
 
+def cmd_orb(args: argparse.Namespace) -> None:
+    from floating_orb import launch_orb
+
+    project_root = Path(args.project).expanduser().resolve()
+    launch_orb(db.resolve_db_path(project_root, args.db))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Antigravity -> Codex CLI Orchestrator")
     p.add_argument("--project", default=".", help="Target project root directory")
@@ -913,6 +920,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--open", action="store_true", help="Open browser automatically")
     sp.set_defaults(func=cmd_console)
+
+    sp = sub.add_parser("orb", help="Launch the floating desktop dashboard shortcut")
+    sp.set_defaults(func=cmd_orb)
 
     return p
 

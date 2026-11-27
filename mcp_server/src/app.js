@@ -64,12 +64,16 @@ function fmtTokens(n) {
 }
 
 function formatInline(text) {
-  const format = (escaped) => escaped.replace(/`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_, code, bold, italic, label, href) => {
+  const format = (escaped) => escaped.replace(/`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+|&lt;\/?[a-z]:[\\/].+?&gt;|\/?[a-z]:[\\/](?:[^()\n]|\([^()\n]*\))+)\)/gi,
+    (_, code, bold, italic, label, target) => {
       if (code) return `<code class="ic">${code}</code>`;
       if (bold) return `<strong>${format(bold)}</strong>`;
       if (italic) return `<em>${format(italic)}</em>`;
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      if (/^https?:\/\//i.test(target)) {
+        return `<a href="${target}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      }
+      const path = target.replace(/^&lt;|&gt;$/g, "").replace(/^\//, "");
+      return `<button type="button" class="copy-btn" data-copy="${path}" title="复制路径">${label}</button>`;
     });
   return format(esc(text));
 }
