@@ -119,7 +119,7 @@ def _extract_cmd_preview(name: str, raw_in: str) -> str:
 
 
 def parse_session_detail(path: Path) -> dict[str, Any]:
-    """Parse a Codex CLI rollout JSONL into structured chat-card execution details."""
+    """Parse a Codex CLI rollout JSONL into structured multi-round execution details."""
     total_input = 0
     total_cached = 0
     total_output = 0
@@ -129,15 +129,24 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
     turns = 0
     first_ts = ""
     last_ts = ""
-    is_complete = False
 
-    user_prompt = ""
-    commentaries: list[str] = []
-    final_summary = ""
-    commands: list[dict[str, Any]] = []
-    files_changed: list[dict[str, str]] = []
-    seen_files: set[str] = set()
-    call_index: dict[str, dict[str, Any]] = {}
+    raw_rounds: list[dict[str, Any]] = []
+
+    def new_round(started_ts: str = "") -> dict[str, Any]:
+        return {
+            "prompt": "",
+            "commentaries": [],
+            "final_summary": "",
+            "commands": [],
+            "files_changed": [],
+            "_seen_files": set(),
+            "_call_index": {},
+            "is_complete": False,
+            "first_ts": started_ts,
+            "last_ts": started_ts,
+        }
+
+    cur: Optional[dict[str, Any]] = None
 
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -174,9 +183,22 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                 total_cached += int(usage.get("cached_input_tokens") or 0)
                 total_output += int(usage.get("output_tokens") or 0)
                 total_reasoning += int(usage.get("reasoning_output_tokens") or 0)
+        elif etype == "event_msg" and payload.get("type") == "task_started":
+            cur = new_round(ts)
+            raw_rounds.append(cur)
         elif etype == "event_msg" and payload.get("type") == "task_complete":
-            is_complete = True
+            if cur is not None:
+                cur["is_complete"] = True
+                if ts:
+                    cur["last_ts"] = ts
         elif etype == "response_item":
+            if cur is None:
+                cur = new_round(ts)
+                raw_rounds.append(cur)
+            if ts:
+                if not cur["first_ts"]:
+                    cur["first_ts"] = ts
+                cur["last_ts"] = ts
             ptype = payload.get("type")
             if ptype == "message":
                 role = payload.get("role")
@@ -189,14 +211,14 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                 body = "\n".join(texts).strip()
                 if not body:
                     continue
-                if role == "user" and not user_prompt and "AGENTS.md instructions" not in body and "<environment_context>" not in body:
-                    user_prompt = body
+                if role == "user" and not cur["prompt"] and "AGENTS.md instructions" not in body and "<environment_context>" not in body:
+                    cur["prompt"] = body
                 elif role == "assistant":
                     phase = payload.get("phase") or ""
                     if phase == "commentary":
-                        commentaries.append(body)
+                        cur["commentaries"].append(body)
                     else:
-                        final_summary = body
+                        cur["final_summary"] = body
             elif ptype in ("custom_tool_call", "function_call"):
                 name = str(payload.get("name") or "tool")
                 call_id = str(payload.get("call_id") or "")
@@ -205,10 +227,10 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                     raw_in = json.dumps(raw_in, ensure_ascii=False)
                 for action, fpath in PATCH_FILE_RE.findall(raw_in):
                     fpath = fpath.strip()
-                    if fpath not in seen_files:
-                        seen_files.add(fpath)
+                    if fpath not in cur["_seen_files"]:
+                        cur["_seen_files"].add(fpath)
                         action_cn = {"Add": "新增", "Update": "修改", "Delete": "删除"}.get(action, "修改")
-                        files_changed.append({"action": action_cn, "path": fpath})
+                        cur["files_changed"].append({"action": action_cn, "path": fpath})
                 cmd_item = {
                     "call_id": call_id,
                     "tool": name,
@@ -217,9 +239,9 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                     "duration": "",
                     "output": "",
                 }
-                commands.append(cmd_item)
+                cur["commands"].append(cmd_item)
                 if call_id:
-                    call_index[call_id] = cmd_item
+                    cur["_call_index"][call_id] = cmd_item
             elif ptype in ("custom_tool_call_output", "function_call_output"):
                 call_id = str(payload.get("call_id") or "")
                 out = payload.get("output")
@@ -230,8 +252,8 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                     text_out = "".join(
                         item["text"] for item in out if isinstance(item, dict) and isinstance(item.get("text"), str)
                     )
-                if call_id in call_index:
-                    item = call_index[call_id]
+                if call_id in cur["_call_index"]:
+                    item = cur["_call_index"][call_id]
                     item["output"] = text_out.strip()[:2000]
                     wt = WALL_TIME_RE.search(text_out)
                     if wt:
@@ -240,24 +262,30 @@ def parse_session_detail(path: Path) -> dict[str, Any]:
                     code = int(ec.group(1) or ec.group(2)) if ec else 0
                     item["status"] = "pass" if code == 0 else "fail"
 
-    if not final_summary and commentaries:
-        final_summary = commentaries[-1]
-
-    duration_sec = 0
-    t0, t1 = _parse_iso(first_ts), _parse_iso(last_ts)
-    if t0 and t1:
-        duration_sec = max(0, int((t1 - t0).total_seconds()))
+    formatted_rounds: list[dict[str, Any]] = []
+    for idx, rr in enumerate(raw_rounds, start=1):
+        if not rr["prompt"] and not rr["commands"] and not rr["final_summary"] and not rr["commentaries"]:
+            continue
+        t0, t1 = _parse_iso(rr["first_ts"]), _parse_iso(rr["last_ts"])
+        dur = max(0, int((t1 - t0).total_seconds())) if (t0 and t1) else 0
+        summary = rr["final_summary"] or (rr["commentaries"][-1] if rr["commentaries"] else "")
+        formatted_rounds.append(
+            {
+                "round_no": idx,
+                "prompt": rr["prompt"],
+                "commentary": rr["commentaries"][-1] if rr["commentaries"] else "",
+                "final_summary": summary,
+                "commands": rr["commands"][-12:],
+                "files_changed": rr["files_changed"][:20],
+                "is_complete": rr["is_complete"],
+                "duration_sec": dur,
+                "started_label": _short_time(rr["first_ts"]),
+            }
+        )
 
     cache_hit_pct = round((total_cached / total_input) * 100.0, 1) if total_input > 0 else 0.0
     return {
-        "prompt": user_prompt,
-        "commentary": commentaries[-1] if commentaries else "",
-        "commentaries": commentaries[-5:],
-        "final_summary": final_summary,
-        "commands": commands[-12:],
-        "files_changed": files_changed[:20],
-        "is_complete": is_complete,
-        "duration_sec": duration_sec,
+        "rounds": formatted_rounds,
         "started_label": _short_time(first_ts),
         "telemetry": {
             "model": model_name or "gpt-6.2-sol",
@@ -374,26 +402,41 @@ def build_state_snapshot(
                 (m for m in reversed(messages) if m["msg_type"] == "dispatch" and m.get("task_key") == matched_task["task_key"]),
                 None,
             )
-        raw_prompt = (dispatch_msg["content"] if dispatch_msg else "") or detail["prompt"]
-        rounds.append(
+        parsed_rounds = detail["rounds"] or [
             {
                 "round_no": 1,
-                "task_key": matched_task["task_key"] if matched_task else "",
-                "task_title": matched_task["title"] if matched_task else "",
-                "dispatch_time": _short_time(dispatch_msg["created_at"]) if dispatch_msg else detail["started_label"],
-                "dispatch_brief": _extract_task_brief(raw_prompt) if raw_prompt else "（本地 Codex CLI 直接执行的会话）",
-                "dispatch_full": raw_prompt,
-                "is_active": sel["is_active"],
-                "is_complete": detail["is_complete"] or not sel["is_active"],
-                "duration_sec": detail["duration_sec"],
-                "commentary": detail["commentary"],
-                "commands": detail["commands"],
-                "files_changed": detail["files_changed"],
-                "final_summary": detail["final_summary"],
-                "model": detail["telemetry"]["model"],
-                "effort": detail["telemetry"]["effort"],
+                "prompt": "",
+                "commentary": "",
+                "final_summary": "",
+                "commands": [],
+                "files_changed": [],
+                "is_complete": not sel["is_active"],
+                "duration_sec": 0,
+                "started_label": detail["started_label"],
             }
-        )
+        ]
+        for idx, rr in enumerate(parsed_rounds):
+            raw_prompt = rr["prompt"] or (dispatch_msg["content"] if idx == 0 and dispatch_msg else "")
+            is_last = idx == len(parsed_rounds) - 1
+            rounds.append(
+                {
+                    "round_no": idx + 1,
+                    "task_key": matched_task["task_key"] if matched_task else "",
+                    "task_title": matched_task["title"] if matched_task else "",
+                    "dispatch_time": rr["started_label"] or (_short_time(dispatch_msg["created_at"]) if dispatch_msg else ""),
+                    "dispatch_brief": _extract_task_brief(raw_prompt) if raw_prompt else "（本地 Codex CLI 直接执行的会话）",
+                    "dispatch_full": raw_prompt,
+                    "is_active": sel["is_active"] and is_last and not rr["is_complete"],
+                    "is_complete": rr["is_complete"] or not (sel["is_active"] and is_last),
+                    "duration_sec": rr["duration_sec"],
+                    "commentary": rr["commentary"],
+                    "commands": rr["commands"],
+                    "files_changed": rr["files_changed"],
+                    "final_summary": rr["final_summary"],
+                    "model": detail["telemetry"]["model"],
+                    "effort": detail["telemetry"]["effort"],
+                }
+            )
 
     return {
         "sidebar_projects": sidebar_projects,
