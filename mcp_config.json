@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "codex_monitor": {
+      "command": "python",
+      "args": [
+        "${PLUGIN_ROOT}/mcp_server/server.py"
+      ]
+    }
+  }
+}

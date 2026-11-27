@@ -106,9 +106,8 @@ To maximize throughput without causing merge conflicts or token waste:
   ```powershell
   python ".../orchestrate.py" --project "<PROJECT>" control --change "<change_id>" --flag pause --note "Wait for API review"
   ```
-- Open the **native Antigravity Sidecar Panel** directly in the side pane (no external browser needed) by emitting this clickable pill in chat:
-  `[Codex 任务与终端观察](sidecar://codex-orchestrator/codex-console/ui.html)`
-- Or launch the standalone mini-window console via CLI:
+- Open the **native Antigravity MCP App** (`Codex 实时观察台`) directly in the side pane by calling tool `open_codex_monitor` (or users can open it from the side pane `+` menu or left sidebar). It polls local SQLite WAL, `~/.codex/sessions/*.jsonl` (live commands + real-time token/cache hit rate), and live `git diff` with zero LLM cost.
+- Or launch the optional standalone mini-window console via CLI:
   ```powershell
   codex-orch --project "<PROJECT>" ui --port 8765 --open
   # or inside the project root directly:

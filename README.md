@@ -1,66 +1,45 @@
-# Codex Orchestrator
+# Codex Orchestrator (Native Antigravity MCP App)
 
-Antigravity 作为总调度与决策中心（Master），Codex CLI 作为纯执行层（Worker）的多 Agent 编排插件：
+Antigravity 作为总调度与决策中心（Master），官方 `codex exec` 作为纯执行层（Worker）的原生插件：
 
-- **OpenSpec**：记录 `change` 与 `tasks.md` 任务节点（仅由 Antigravity 维护勾选状态）。
-- **SQLite（WAL 模式）**：作为沟通记录中间件、会话绑定存储与控制台插件数据源，默认位于 `<project_root>/.codex-orchestrator/state.db`。
-- **Codex CLI**：以非交互模式执行单个清晰 task，遇到需要决策的问题按 `BLOCKED:` 协议退出并交由 Antigravity 拍板续跑。
-- **默认分工路由**：
-  - **Antigravity（Gemini）亲手负责**：全部文档编写（OpenSpec / README / 说明文档）、全部前端页面与 UI/UX 视觉交互、总控调度与阻塞拍板。
-  - **Codex CLI（GPT）专注负责**：后端与核心业务实体、数据层/算法/状态机、按业务场景拆分的自动化测试，以及收尾逻辑与边界交叉审查。
-- **本地控制台看板**：零外部依赖紧凑小窗 Web UI，1.5 秒轮询 SQLite WAL 与本地 `~/.codex/sessions/` 实时终端流，支持查看当前派发指令、实时黑框直播、一键暂停与叮嘱。
+1. **原生 MCP App（SEP-1865），零侵入零遥测**：严格按 Antigravity 官方 MCP App 规范实现，不改客户端 `asar`，不搞 CDP 注入，客户端更新不失效；前端已预编译为单文件 [mcp_server/app.html](mcp_server/app.html)，**安装与运行不依赖 Node.js**，无联网上报、无遥测追踪。
+2. **纯本地只读轮询，零额外消耗**：通过 `app-only` MCP 工具每 2 秒只读轮询本地 SQLite WAL、`~/.codex/sessions/*.jsonl`（实时命令流、Token 消耗与缓存命中率）及本地 `git diff`，彻底打开 `codex exec` 黑盒，**零额外 LLM / API 额度消耗**。
+3. **合规单向 + 安全护栏**：仅由 Antigravity 单向调用本地官方 `codex exec`，不反向调用、不代理、不碰 OAuth 凭据；Git 写任务默认启用 `git worktree` 隔离与沙箱锁定（`--approve-for-me`），不污染主分支。
+4. **跨平台 + AI 一键自部署**：支持 Windows / macOS / Linux（仅需 Python 3.9+ 标准库）。仓库自带给 AI 阅读的 [INSTALL_SKILL.md](INSTALL_SKILL.md)，克隆后发给 Antigravity 即可自动完成环境检测、安装与自检。
+
+## 默认分工路由
+
+- **Antigravity（Gemini）亲手负责**：全部文档编写（OpenSpec / README / 说明文档）、全部前端页面与 UI/UX 视觉交互、总控统筹与阻塞拍板。
+- **Codex CLI（GPT）专注负责**：按实体拆分的后端/数据层/核心算法/状态机、按业务场景拆分的自动化测试，以及收尾逻辑与边界交叉审查（`cross-review`）。
 
 ## 目录结构
 
 ```text
 codex-orchestrator/
-├── plugin.json
-├── README.md
+├── plugin.json               # Antigravity 插件清单
+├── mcp_config.json           # 原生 MCP App 服务配置（Python 标准库，零外部依赖）
+├── INSTALL_SKILL.md          # 给 AI 看的跨平台一键自动部署说明
+├── install.ps1               # Windows 全局短命令 codex-orch 安装脚本
+├── bin/                      # 跨平台短命令包装器
+├── mcp_server/
+│   ├── server.py             # 零依赖 Python stdio MCP App 服务端
+│   └── app.html              # 预编译单文件 MCP App 前端（含 @modelcontextprotocol/ext-apps）
 └── skills/
     └── codex-orchestrator/
-        ├── SKILL.md
+        ├── SKILL.md          # 三阶段并发编排与分工路由 SOP
         └── scripts/
-            ├── db.py           # SQLite WAL 中间件（changes / tasks / messages / decisions）
-            ├── orchestrate.py  # 统一调度 CLI（init / sync-tasks / dispatch / resume / gate / complete / rollback / decide / control / status / console）
-            └── console.py      # 零依赖本地 Web 控制台看板
+            ├── db.py         # SQLite WAL 中间件
+            ├── orchestrate.py# 调度器（默认 worktree 隔离、并发 dispatch-batch、cross-review）
+            └── console.py    # 可选独立小窗 Web 看板
 ```
 
-## 前置依赖
+## 快速安装
 
-- Python 3.9+（仅使用标准库 `sqlite3`、`http.server` 等，零第三方包）
-- Node.js / npm：
-  ```bash
-  npm install -g @openai/codex @fission-ai/openspec
-  ```
-- 完成 `codex login`（若已登录 Codex App 通常会自动复用登录态）
-
-## 安装为全局 Antigravity 插件
-
-```powershell
-git clone https://github.com/jiuan0323/codex-orchestrator.git ~/.gemini/config/plugins/codex-orchestrator
-# 安装全局短命令 codex-orch（Windows）
-~/.gemini/config/plugins/codex-orchestrator/install.ps1
-```
-
-Antigravity 会自动发现并加载该插件。
-
-## 快速开始
-
-在任意项目目录下：
+把本仓库发给 Antigravity 并让它按 `INSTALL_SKILL.md` 自动部署，或手动执行：
 
 ```bash
-# 一键启动控制台看板并自动打开浏览器（默认监听当前目录，端口 8765）
-codex-orch
-
-# 或者指定项目目录 / 端口
-codex-orch --project /path/to/repo ui --port 8765 --open
-
-# 1. 同步 OpenSpec 任务节点到 SQLite
-codex-orch sync-tasks --change my-change
-
-# 2. 派发单个 task 给 Codex CLI 执行
-codex-orch dispatch --change my-change --task 1.1 --instructions "Implement feature X"
-
-# 3. 查看状态
-codex-orch status
+git clone https://github.com/jiuan0323/codex-orchestrator.git ~/.gemini/config/plugins/codex-orchestrator
+python ~/.gemini/config/plugins/codex-orchestrator/mcp_server/server.py --self-test
 ```
+
+在 Antigravity 侧边栏 `+` 号菜单或左侧边栏即可直接打开 **「Codex 实时观察台」**。
