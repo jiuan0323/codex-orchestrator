@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
-import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +20,10 @@ APP_URI = "ui://codex-orchestrator/app.html"
 sys.path.insert(0, str(SCRIPTS_DIR))
 import console  # noqa: E402
 import db  # noqa: E402
+
+PATCH_FILE_RE = re.compile(r"\*\*\*\s+(Add|Update|Delete)\s+File:\s+(.+)")
+WALL_TIME_RE = re.compile(r"Wall time\s+([0-9.]+)\s*seconds?", re.IGNORECASE)
+EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)|exit\s*code[:\s]+(-?\d+)', re.IGNORECASE)
 
 
 def _run_git(project_root: Path, *args: str, timeout: float = 5.0) -> str:
@@ -36,6 +41,23 @@ def _run_git(project_root: Path, *args: str, timeout: float = 5.0) -> str:
         return proc.stdout if proc.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _parse_iso(ts: str) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _short_time(ts: str) -> str:
+    dt = _parse_iso(ts)
+    if not dt:
+        return ts[:16]
+    local_dt = dt.astimezone()
+    return local_dt.strftime("%m-%d %H:%M")
 
 
 def discover_projects() -> list[dict[str, Any]]:
@@ -85,9 +107,19 @@ def resolve_project(requested: Optional[str]) -> Optional[Path]:
     return None
 
 
-def parse_session_telemetry(path: Path, limit: int = 80) -> dict[str, Any]:
-    """Read live events + token usage + cache hit rate from a Codex CLI rollout JSONL."""
-    events = console.parse_codex_session_events(path, limit=limit)
+def _extract_cmd_preview(name: str, raw_in: str) -> str:
+    if name == "exec":
+        m = re.search(r'cmd\s*:\s*"([^"]+)"', raw_in)
+        if m:
+            return m.group(1)
+        m2 = re.search(r"cmd\s*:\s*'([^']+)'", raw_in)
+        if m2:
+            return m2.group(1)
+    return raw_in.splitlines()[0][:140] if raw_in else name
+
+
+def parse_session_detail(path: Path) -> dict[str, Any]:
+    """Parse a Codex CLI rollout JSONL into structured chat-card execution details."""
     total_input = 0
     total_cached = 0
     total_output = 0
@@ -97,6 +129,15 @@ def parse_session_telemetry(path: Path, limit: int = 80) -> dict[str, Any]:
     turns = 0
     first_ts = ""
     last_ts = ""
+    is_complete = False
+
+    user_prompt = ""
+    commentaries: list[str] = []
+    final_summary = ""
+    commands: list[dict[str, Any]] = []
+    files_changed: list[dict[str, str]] = []
+    seen_files: set[str] = set()
+    call_index: dict[str, dict[str, Any]] = {}
 
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -133,98 +174,236 @@ def parse_session_telemetry(path: Path, limit: int = 80) -> dict[str, Any]:
                 total_cached += int(usage.get("cached_input_tokens") or 0)
                 total_output += int(usage.get("output_tokens") or 0)
                 total_reasoning += int(usage.get("reasoning_output_tokens") or 0)
+        elif etype == "event_msg" and payload.get("type") == "task_complete":
+            is_complete = True
+        elif etype == "response_item":
+            ptype = payload.get("type")
+            if ptype == "message":
+                role = payload.get("role")
+                parts = payload.get("content") or []
+                texts = [
+                    p.get("text", "").strip()
+                    for p in parts
+                    if isinstance(p, dict) and p.get("type") in ("output_text", "input_text", "text") and p.get("text")
+                ]
+                body = "\n".join(texts).strip()
+                if not body:
+                    continue
+                if role == "user" and not user_prompt and "AGENTS.md instructions" not in body and "<environment_context>" not in body:
+                    user_prompt = body
+                elif role == "assistant":
+                    phase = payload.get("phase") or ""
+                    if phase == "commentary":
+                        commentaries.append(body)
+                    else:
+                        final_summary = body
+            elif ptype in ("custom_tool_call", "function_call"):
+                name = str(payload.get("name") or "tool")
+                call_id = str(payload.get("call_id") or "")
+                raw_in = payload.get("input") or payload.get("arguments") or ""
+                if not isinstance(raw_in, str):
+                    raw_in = json.dumps(raw_in, ensure_ascii=False)
+                for action, fpath in PATCH_FILE_RE.findall(raw_in):
+                    fpath = fpath.strip()
+                    if fpath not in seen_files:
+                        seen_files.add(fpath)
+                        action_cn = {"Add": "新增", "Update": "修改", "Delete": "删除"}.get(action, "修改")
+                        files_changed.append({"action": action_cn, "path": fpath})
+                cmd_item = {
+                    "call_id": call_id,
+                    "tool": name,
+                    "cmd": _extract_cmd_preview(name, raw_in),
+                    "status": "running",
+                    "duration": "",
+                    "output": "",
+                }
+                commands.append(cmd_item)
+                if call_id:
+                    call_index[call_id] = cmd_item
+            elif ptype in ("custom_tool_call_output", "function_call_output"):
+                call_id = str(payload.get("call_id") or "")
+                out = payload.get("output")
+                text_out = ""
+                if isinstance(out, str):
+                    text_out = out
+                elif isinstance(out, list):
+                    text_out = "".join(
+                        item["text"] for item in out if isinstance(item, dict) and isinstance(item.get("text"), str)
+                    )
+                if call_id in call_index:
+                    item = call_index[call_id]
+                    item["output"] = text_out.strip()[:2000]
+                    wt = WALL_TIME_RE.search(text_out)
+                    if wt:
+                        item["duration"] = f"{float(wt.group(1)):.1f}s"
+                    ec = EXIT_CODE_RE.search(text_out)
+                    code = int(ec.group(1) or ec.group(2)) if ec else 0
+                    item["status"] = "pass" if code == 0 else "fail"
+
+    if not final_summary and commentaries:
+        final_summary = commentaries[-1]
+
+    duration_sec = 0
+    t0, t1 = _parse_iso(first_ts), _parse_iso(last_ts)
+    if t0 and t1:
+        duration_sec = max(0, int((t1 - t0).total_seconds()))
 
     cache_hit_pct = round((total_cached / total_input) * 100.0, 1) if total_input > 0 else 0.0
     return {
-        "events": events,
+        "prompt": user_prompt,
+        "commentary": commentaries[-1] if commentaries else "",
+        "commentaries": commentaries[-5:],
+        "final_summary": final_summary,
+        "commands": commands[-12:],
+        "files_changed": files_changed[:20],
+        "is_complete": is_complete,
+        "duration_sec": duration_sec,
+        "started_label": _short_time(first_ts),
         "telemetry": {
-            "model": model_name,
-            "effort": effort,
-            "turns": turns,
+            "model": model_name or "gpt-6.2-sol",
+            "effort": effort or "high",
+            "turns": max(1, turns),
             "input_tokens": total_input,
             "cached_input_tokens": total_cached,
             "cache_hit_pct": cache_hit_pct,
             "output_tokens": total_output,
             "reasoning_output_tokens": total_reasoning,
-            "first_ts": first_ts,
-            "last_ts": last_ts,
         },
     }
 
 
-def collect_git_changes(project_root: Path) -> list[dict[str, str]]:
-    raw = _run_git(project_root, "status", "--porcelain")
-    files: list[dict[str, str]] = []
-    for line in raw.splitlines():
-        if len(line) < 4:
-            continue
-        code = line[:2].strip() or "M"
-        fpath = line[3:].strip().strip('"')
-        if fpath.startswith(".codex-orchestrator/"):
-            continue
-        files.append({"status": code, "path": fpath})
-    return files[:80]
+def _extract_task_brief(prompt: str) -> str:
+    """Pull out the human-readable Execution Instructions from Antigravity's dispatch template."""
+    m = re.search(r"## Execution Instructions\s*\n(.+?)(?:\n## |\Z)", prompt, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return prompt.strip()
 
 
 def build_state_snapshot(
     project_arg: Optional[str] = None,
     session_arg: Optional[str] = None,
-    limit: int = 60,
 ) -> dict[str, Any]:
     projects = discover_projects()
+    sidebar_projects: list[dict[str, Any]] = []
+
+    for proj in projects:
+        p_path = Path(proj["path"])
+        p_sessions = console.find_project_codex_sessions([str(p_path)], max_scan=30)
+        db_path = db.resolve_db_path(p_path)
+        task_by_sid: dict[str, dict[str, Any]] = {}
+        if db_path.exists():
+            db.init_db(db_path)
+            with db.connect(db_path) as conn:
+                for r in conn.execute("SELECT * FROM tasks").fetchall():
+                    if r["codex_session_id"]:
+                        task_by_sid[r["codex_session_id"]] = dict(r)
+        items = []
+        for s in p_sessions[:8]:
+            sid = s["session_id"]
+            t_row = task_by_sid.get(sid)
+            title = f"任务 {t_row['task_key']} · {t_row['title']}" if t_row else f"会话 {sid[:8]}"
+            items.append(
+                {
+                    "session_id": sid,
+                    "title": title,
+                    "task_key": t_row["task_key"] if t_row else "",
+                    "status": t_row["status"] if t_row else ("running" if s["is_active"] else "done"),
+                    "is_active": s["is_active"],
+                    "started_label": _short_time(s["started_at"]),
+                    "project_path": str(p_path),
+                }
+            )
+        sidebar_projects.append(
+            {
+                "name": proj["name"],
+                "path": str(p_path),
+                "count": len(items),
+                "sessions": items,
+            }
+        )
+
     target = resolve_project(project_arg)
     if not target:
         return {
-            "projects": projects,
+            "sidebar_projects": sidebar_projects,
             "active_project": "",
-            "changes": [],
-            "tasks": [],
-            "decisions": [],
-            "recent_messages": [],
-            "sessions": [],
+            "project_name": "",
+            "change": None,
             "selected_session_id": "",
-            "events": [],
+            "rounds": [],
             "telemetry": {},
-            "git_files": [],
+            "tasks": [],
         }
 
     db_path = db.resolve_db_path(target)
-    status_data: dict[str, Any] = {"changes": [], "tasks": [], "decisions": [], "recent_messages": []}
+    tasks: list[dict[str, Any]] = []
+    change_row: Optional[dict[str, Any]] = None
+    messages: list[dict[str, Any]] = []
     roots = [str(target)]
 
     if db_path.exists():
         db.init_db(db_path)
         with db.connect(db_path) as conn:
-            status_data = db.fetch_status(conn, change_id=None, recent_messages=40)
-            for r in conn.execute("SELECT project_root, worktree_path FROM changes").fetchall():
-                if r["project_root"]:
-                    roots.append(r["project_root"])
-                if r["worktree_path"]:
-                    roots.append(r["worktree_path"])
-            for r in conn.execute("SELECT worktree_path FROM tasks WHERE worktree_path IS NOT NULL").fetchall():
-                if r["worktree_path"]:
-                    roots.append(r["worktree_path"])
+            st = db.fetch_status(conn, change_id=None, recent_messages=60)
+            tasks = st.get("tasks", [])
+            changes = st.get("changes", [])
+            change_row = changes[0] if changes else None
+            messages = st.get("recent_messages", [])
+            for c in changes:
+                if c.get("worktree_path"):
+                    roots.append(c["worktree_path"])
+            for t in tasks:
+                if t.get("worktree_path"):
+                    roots.append(t["worktree_path"])
 
-    sessions = console.find_project_codex_sessions(roots)
+    sessions = console.find_project_codex_sessions(roots, max_scan=40)
     sel = next((s for s in sessions if s["session_id"] == session_arg), None) if session_arg else None
     if not sel and sessions:
         sel = sessions[0]
 
-    live_data = parse_session_telemetry(Path(sel["path"]), limit=limit) if sel else {"events": [], "telemetry": {}}
-    git_files = collect_git_changes(target)
+    rounds: list[dict[str, Any]] = []
+    top_telemetry: dict[str, Any] = {}
+    if sel:
+        detail = parse_session_detail(Path(sel["path"]))
+        top_telemetry = detail["telemetry"]
+        matched_task = next((t for t in tasks if t.get("codex_session_id") == sel["session_id"]), None)
+        dispatch_msg = None
+        if matched_task:
+            dispatch_msg = next(
+                (m for m in reversed(messages) if m["msg_type"] == "dispatch" and m.get("task_key") == matched_task["task_key"]),
+                None,
+            )
+        raw_prompt = (dispatch_msg["content"] if dispatch_msg else "") or detail["prompt"]
+        rounds.append(
+            {
+                "round_no": 1,
+                "task_key": matched_task["task_key"] if matched_task else "",
+                "task_title": matched_task["title"] if matched_task else "",
+                "dispatch_time": _short_time(dispatch_msg["created_at"]) if dispatch_msg else detail["started_label"],
+                "dispatch_brief": _extract_task_brief(raw_prompt) if raw_prompt else "（本地 Codex CLI 直接执行的会话）",
+                "dispatch_full": raw_prompt,
+                "is_active": sel["is_active"],
+                "is_complete": detail["is_complete"] or not sel["is_active"],
+                "duration_sec": detail["duration_sec"],
+                "commentary": detail["commentary"],
+                "commands": detail["commands"],
+                "files_changed": detail["files_changed"],
+                "final_summary": detail["final_summary"],
+                "model": detail["telemetry"]["model"],
+                "effort": detail["telemetry"]["effort"],
+            }
+        )
 
     return {
-        "projects": projects,
+        "sidebar_projects": sidebar_projects,
         "active_project": str(target),
-        "changes": status_data.get("changes", []),
-        "tasks": status_data.get("tasks", []),
-        "decisions": status_data.get("decisions", []),
-        "recent_messages": status_data.get("recent_messages", []),
-        "sessions": sessions,
+        "project_name": target.name,
+        "change": change_row,
         "selected_session_id": sel["session_id"] if sel else "",
-        "events": live_data["events"],
-        "telemetry": live_data["telemetry"],
-        "git_files": git_files,
+        "rounds": rounds,
+        "telemetry": top_telemetry,
+        "tasks": tasks,
     }
 
 
@@ -233,10 +412,11 @@ def get_file_diff(project_arg: Optional[str], file_path: Optional[str] = None) -
     if not target:
         return {"ok": False, "diff": "", "error": "No project found"}
 
+    diff_text = ""
     if file_path:
         diff_text = _run_git(target, "diff", "--", file_path)
         if not diff_text:
-            diff_text = _run_git(target, "diff", "--cached", "--", file_path)
+            diff_text = _run_git(target, "diff", "HEAD~1..HEAD", "--", file_path)
         if not diff_text:
             candidate = (target / file_path).resolve()
             try:
@@ -244,16 +424,16 @@ def get_file_diff(project_arg: Optional[str], file_path: Optional[str] = None) -
                 if candidate.is_file() and candidate.stat().st_size < 100_000:
                     content = candidate.read_text(encoding="utf-8", errors="replace")
                     diff_text = f"--- /dev/null\n+++ b/{file_path}\n" + "\n".join(
-                        f"+{ln}" for ln in content.splitlines()[:250]
+                        f"+{ln}" for ln in content.splitlines()[:200]
                     )
             except Exception:
                 pass
     else:
-        diff_text = _run_git(target, "diff", "--stat") + "\n\n" + _run_git(target, "diff")
+        diff_text = _run_git(target, "diff") or _run_git(target, "diff", "HEAD~1..HEAD")
 
-    if len(diff_text) > 40000:
-        diff_text = diff_text[:40000] + "\n... [diff truncated]"
-    return {"ok": True, "file": file_path or "(all)", "diff": diff_text.strip() or "(当前工作区无未提交改动)"}
+    if len(diff_text) > 36000:
+        diff_text = diff_text[:36000] + "\n... [diff truncated]"
+    return {"ok": True, "file": file_path or "(all)", "diff": diff_text.strip() or "(暂无可展示的 Diff)"}
 
 
 def set_control_state(
@@ -275,8 +455,8 @@ def set_control_state(
 TOOLS_LIST = [
     {
         "name": "open_codex_monitor",
-        "title": "Codex 实时观察台",
-        "description": "Open the native Antigravity Codex Orchestrator live monitor (tasks, live Codex CLI stream, token/cache telemetry, and real-time git diff).",
+        "title": "Antigravity × Codex",
+        "description": "Open the native Antigravity × Codex monitor UI (one-way real-time supervision, token/cache telemetry, and inline git diff).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -288,8 +468,8 @@ TOOLS_LIST = [
             "ui": {"resourceUri": APP_URI},
             "com.google.antigravity/ui": {
                 "entrypoints": [
-                    {"type": "aux_pane", "title": "Codex 实时观察台"},
-                    {"type": "global", "title": "Codex 实时观察台"},
+                    {"type": "aux_pane", "title": "Antigravity × Codex"},
+                    {"type": "global", "title": "Antigravity × Codex"},
                 ]
             },
         },
@@ -297,13 +477,12 @@ TOOLS_LIST = [
     {
         "name": "app_poll_state",
         "title": "Poll local Codex orchestrator state (app-only)",
-        "description": "Read-only local poll of SQLite state, Codex CLI rollout telemetry, token/cache stats, and git status.",
+        "description": "Read-only local poll of SQLite state and Codex CLI rollout telemetry.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
                 "session": {"type": "string"},
-                "limit": {"type": "integer"},
             },
             "additionalProperties": False,
         },
@@ -312,7 +491,7 @@ TOOLS_LIST = [
     {
         "name": "app_get_diff",
         "title": "Read local git diff for modified file (app-only)",
-        "description": "Read live working-tree git diff for a specific file or summary.",
+        "description": "Read working-tree or last-commit git diff for a specific file.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -363,7 +542,7 @@ def handle_request(req: dict[str, Any]) -> Optional[dict[str, Any]]:
             {
                 "protocolVersion": proto,
                 "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "codex-orchestrator-mcp-app", "version": "0.2.0"},
+                "serverInfo": {"name": "codex-orchestrator-mcp-app", "version": "0.3.0"},
             }
         )
 
@@ -379,8 +558,8 @@ def handle_request(req: dict[str, Any]) -> Optional[dict[str, Any]]:
                 "resources": [
                     {
                         "uri": APP_URI,
-                        "name": "Codex 实时观察台",
-                        "description": "Zero-telemetry local MCP App UI for Codex Orchestrator",
+                        "name": "Antigravity × Codex",
+                        "description": "Warm minimalist local MCP App monitor for Antigravity -> Codex CLI",
                         "mimeType": "text/html;profile=mcp-app",
                         "_meta": {"ui": {"prefersBorder": False}},
                     }
@@ -411,16 +590,11 @@ def handle_request(req: dict[str, Any]) -> Optional[dict[str, Any]]:
         args = params.get("arguments") or {}
         if name == "open_codex_monitor":
             snap = build_state_snapshot(project_arg=args.get("project"))
-            done_n = sum(1 for t in snap["tasks"] if t.get("status") == "done")
-            summary = f"Opened Codex Monitor for {snap['active_project'] or '(none)'} ({done_n}/{len(snap['tasks'])} tasks done)."
+            summary = f"Opened Antigravity × Codex monitor for {snap['project_name'] or '(none)'}."
             return ok({"content": [{"type": "text", "text": summary}], "structuredContent": snap})
 
         if name == "app_poll_state":
-            snap = build_state_snapshot(
-                project_arg=args.get("project"),
-                session_arg=args.get("session"),
-                limit=int(args.get("limit") or 60),
-            )
+            snap = build_state_snapshot(project_arg=args.get("project"), session_arg=args.get("session"))
             return ok({"content": [{"type": "text", "text": "ok"}], "structuredContent": snap})
 
         if name == "app_get_diff":
@@ -460,7 +634,6 @@ def run_stdio_loop() -> None:
 
 def run_self_test() -> None:
     init_res = handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    tools_res = handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     res_read = handle_request({"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": APP_URI}})
     poll_res = handle_request({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "app_poll_state", "arguments": {}}})
     snap = poll_res["result"]["structuredContent"]
@@ -469,12 +642,10 @@ def run_self_test() -> None:
             {
                 "ok": True,
                 "server": init_res["result"]["serverInfo"],
-                "tools": [t["name"] for t in tools_res["result"]["tools"]],
                 "html_bytes": len(res_read["result"]["contents"][0]["text"]),
-                "projects": [p["name"] for p in snap["projects"]],
-                "tasks": len(snap["tasks"]),
+                "projects": [p["name"] for p in snap["sidebar_projects"]],
+                "rounds": len(snap["rounds"]),
                 "telemetry": snap["telemetry"],
-                "git_files": len(snap["git_files"]),
             },
             ensure_ascii=False,
             indent=2,
